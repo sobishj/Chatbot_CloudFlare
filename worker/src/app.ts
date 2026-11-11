@@ -17,6 +17,11 @@ import { csrfCookieIfMissing, csrfValid } from "./security/sessions";
 import { HttpError, json, UserFacingError } from "./util/http";
 import { registerHealth } from "./routes/health";
 import { allowedPreflightOrigin, corsHeaders, isPublicPath, requestOrigin } from "./routes/cors";
+import { registerAuth } from "./routes/admin/auth";
+import { registerSetup } from "./routes/admin/setup";
+import { registerModels } from "./routes/admin/models";
+import { registerSettings } from "./routes/admin/settings";
+import { registerUsers } from "./routes/admin/users";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -85,6 +90,11 @@ app.use("*", async (c, next) => {
 });
 
 registerHealth(app);
+registerAuth(app);
+registerSetup(app);
+registerModels(app);
+registerSettings(app);
+registerUsers(app);
 
 app.notFound(async (c) => {
   const path = new URL(c.req.url).pathname;

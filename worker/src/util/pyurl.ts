@@ -359,7 +359,7 @@ export function fnmatch(name: string, pat: string): boolean {
 // ----------------------------------------------------------------------------- Python string helpers
 /** str.splitlines(): every line boundary Python recognises. */
 export function splitlines(s: string): string[] {
-  const lines = s.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\x85  ]/);
+  const lines = s.split(new RegExp("\\r\\n|[\\n\\r\\v\\f\\x1c\\x1d\\x1e\\x85\\u2028\\u2029]"));
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   return lines;
 }
