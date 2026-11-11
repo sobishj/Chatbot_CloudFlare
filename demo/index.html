@@ -23,8 +23,8 @@
     <div class="card">
       <p>This page loads the chat widget exactly like a client website would. The ugly page styles are on purpose: the widget must look right anyway.</p>
       <p>Open it with a client and API address in the URL:</p>
-      <p><code>http://localhost:5500/?client=CLIENT_ID&amp;api=http://localhost:8000</code></p>
-      <p>Serve this folder on an allowed domain, e.g. <code>python -m http.server 5500</code> inside <code>demo/</code>, and add <code>localhost:5500</code> to the client's <em>Allowed domains</em>.</p>
+      <p><code>http://localhost:5500/?client=CLIENT_ID&amp;api=http://localhost:8787</code> (with <code>wrangler dev</code>), or your Worker's address, e.g. <code>api=https://chat.example.com</code></p>
+      <p>Serve this folder on an allowed domain, e.g. <code>node demo/serve.mjs</code>, and add <code>localhost:5500</code> to the client's <em>Allowed domains</em>.</p>
     </div>
     <div class="card" id="status">Loading widget…</div>
   </main>
@@ -33,7 +33,7 @@
     (function () {
       var params = new URLSearchParams(location.search);
       var client = params.get("client");
-      var api = (params.get("api") || "http://localhost:8000").replace(/\/+$/, "");
+      var api = (params.get("api") || "http://localhost:8787").replace(/\/+$/, "");
       var status = document.getElementById("status");
       if (!client) { status.textContent = "Add ?client=YOUR_CLIENT_ID to the URL."; return; }
       var s = document.createElement("script");
