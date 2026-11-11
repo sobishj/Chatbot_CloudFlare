@@ -1,37 +1,45 @@
-# Website Assistant
+# Website Assistant (Cloudflare edition)
 
 An AI chat assistant that any organisation (malls, hotels, hospitals, universities, airports,
 restaurants, dealerships, real estate, government sites) can add to its website with **one
 script line**. It answers visitors' questions from the client's **website** and **documents**,
 in the visitor's language, and logs every question for analytics.
 
-Everything is managed in a web admin UI. The terminal is needed once, to run `install.sh`.
+This edition runs entirely on **Cloudflare's free plan**: one Worker, D1, Vectorize, Workers AI
+and R2, with cloud LLMs through API keys. The self-hosted edition (Python, PostgreSQL, Docker,
+local models) is [github.com/sobishj/Chatbot](https://github.com/sobishj/Chatbot); see
+[Features that need the self-hosted version](#features-that-need-the-self-hosted-version).
+
+Everything is managed in a web admin UI. The terminal is needed once, to deploy.
 
 ```
- visitor's browser                         your server (Docker)
-┌───────────────────┐   widget.js    ┌──────────────────────────────────────────────┐
-│ client website    │ ─────────────▶ │ app  :8000  public chat API + widget.js      │
-│  <script …>       │ ◀───────────── │      :8001  admin UI (React) + admin API     │
-└───────────────────┘   /api/chat    │ worker      crawls, indexing, scheduler      │
-                                     │ db          PostgreSQL 16 + pgvector         │
-                                     └──────────────┬───────────────────────────────┘
-                                                    │ LiteLLM
-                                   any LLM: OpenAI, Claude, Gemini, Kimi, DeepSeek,
-                                   Mistral, Groq, OpenRouter, DeepInfra, Bionic/Ollama/vLLM/LM Studio
+ visitor's browser                         Cloudflare
+┌───────────────────┐   widget.js    ┌───────────────────────────────────────────────┐
+│ client website    │ ─────────────▶ │ Worker   public chat API + widget.js           │
+│  <script …>       │ ◀───────────── │          admin UI (React) + admin API          │
+└───────────────────┘   /api/chat    │          cron: crawls, indexing, scheduler     │
+                                     │ D1       data + full-text search (FTS5)        │
+                                     │ Vectorize  vectors   ·  R2  files              │
+                                     │ Workers AI  embeddings (bge-m3), PDF/Office    │
+                                     └──────────────┬────────────────────────────────┘
+                                                    │ fetch
+                                   any cloud LLM: OpenAI, Claude, Gemini, Kimi, DeepSeek,
+                                   Mistral, Groq, OpenRouter, DeepInfra, OpenAI-compatible
 ```
 
 **How an answer is made:** the question is masked (phone numbers and emails removed). Then
-hybrid search runs: pgvector similarity plus Postgres full-text search, merged with reciprocal
+hybrid search runs: Vectorize similarity plus D1 full-text search (FTS5), merged with reciprocal
 rank fusion and always filtered by client. The model gets the top 6 passages plus the last 4
-messages of the conversation. Visitors get the answer only (no source links or document names); it is logged with its sources. Answers
-with low confidence are marked *unanswered* so they show up in Stats.
+messages of the conversation. Visitors get the answer only (no source links or document names);
+it is logged with its sources. Answers with low confidence are marked *unanswered* so they show
+up in Stats.
 
 ---
 
 ## Contents
 
 1. [Requirements](#1-requirements)
-2. [Install](#2-install)
+2. [Install (deploy to Cloudflare)](#2-install-deploy-to-cloudflare)
 3. [Setup wizard](#3-setup-wizard)
 4. [Adding a client](#4-adding-a-client)
 5. [Website crawling](#5-website-crawling)
@@ -41,121 +49,115 @@ with low confidence are marked *unanswered* so they show up in Stats.
 9. [Embedding the widget](#9-embedding-the-widget)
 10. [Users and roles](#10-users-and-roles)
 11. [Cloud vs on-premise](#11-cloud-vs-on-premise)
-12. [HTTPS](#12-https)
+12. [HTTPS and custom domains](#12-https-and-custom-domains)
 13. [Backups and restore](#13-backups-and-restore)
-14. [CLI (developers and recovery)](#14-cli-developers-and-recovery)
+14. [Command line (developers and recovery)](#14-command-line-developers-and-recovery)
 15. [Development and tests](#15-development-and-tests)
 16. [Configuration reference](#16-configuration-reference)
 17. [Troubleshooting](#17-troubleshooting)
+18. [Free plan limits](#free-plan-limits)
+19. [Features that need the self-hosted version](#features-that-need-the-self-hosted-version)
 
 ---
 
 ## 1. Requirements
 
-| | Minimum | Recommended |
-|---|---|---|
-| OS | Any Linux with Docker (Ubuntu 22.04+/Debian 12) | Ubuntu 24.04 LTS |
-| CPU | 4 cores | 8 cores |
-| RAM | **8 GB** | 16 GB (more if a local LLM runs on the same machine) |
-| Disk | 20 GB | 50 GB+ |
+| | Needed |
+|---|---|
+| Cloudflare | A free account (Workers Free plan) |
+| Your computer | Node.js 20+ and npm, to build the admin UI and deploy (Windows, macOS or Linux) |
+| AI model | An API key for at least one cloud model provider (OpenAI, Anthropic, Google, DeepInfra, …) |
 
-The embedding model (BAAI/bge-m3, about 2.3 GB) is loaded by both the app and the worker, so
-each process needs about 2.5 GB of RAM. A local LLM such as Qwen needs its own memory, or a GPU.
+No server, database or GPU is needed: Cloudflare runs everything. Embeddings use Workers AI
+(`@cf/baai/bge-m3`, multilingual) from its free daily allowance.
 
-## 2. Install
-
-### Linux server
+## 2. Install (deploy to Cloudflare)
 
 ```bash
-git clone https://github.com/sobishj/ChatBot.git website-assistant
-cd website-assistant
-./install.sh
+git clone https://github.com/sobishj/Chatbot_CloudFlare.git website-assistant
+cd website-assistant/worker
+npm install
 ```
 
-`install.sh` does the following:
-- checks for Docker and offers to install it with Docker's official script
-- creates `.env` with a random `SECRET_KEY` and database password
-- builds and starts the containers
-- waits until the app is healthy, then prints the setup URL
-
-```
-Open http://<server>:8001/setup to finish setup
-```
-
-Running it again is safe: it keeps the existing `.env`.
-
-Optional: choose other ports with `APP_PORT=9000 ADMIN_PORT=9001 ./install.sh`.
-
-### Docker Desktop (Windows / macOS)
-
-Run `./install.sh` from Git Bash or WSL. If you prefer to do it by hand:
-
-```bash
-cp .env.example .env     # set POSTGRES_PASSWORD, DATABASE_URL (same password) and a long SECRET_KEY
-docker compose up -d --build
-```
-
-> **Never change or lose `SECRET_KEY`** after setup. It encrypts the saved AI provider API
-> keys. Keep a copy of `.env` somewhere safe.
-
-### GPU acceleration (optional)
-
-Indexing time is almost all embedding. On a CPU, bge-m3 needs roughly 1–2 seconds per PDF
-page (a 1,000-page PDF takes about 15 minutes on an 8-core server); an NVIDIA GPU is
-typically 20–50× faster. By default the image is built for CPU only. To use a GPU:
-
-1. Install the NVIDIA driver and the
-   [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-   on the host. `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi` must work.
-2. In `.env` set:
+1. **Sign in to Cloudflare** (opens the browser once):
+   ```bash
+   npx wrangler login
    ```
-   TORCH_VARIANT=cu124
-   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+2. **Create the database** and paste the `database_id` it prints into `wrangler.jsonc`
+   (`d1_databases[0].database_id`):
+   ```bash
+   npx wrangler d1 create website-assistant
    ```
-   (On Windows, separate the two files with `;` instead of `:`.)
-3. `docker compose up -d --build` (the CUDA image is a few GB larger).
-4. In **Settings → Compute device** choose **GPU**. The page shows the GPU the worker detected
-   and what is in use. No restart or re-index is needed, and switching back to CPU works the same way.
+3. **Create the vector index** (1024 dimensions, the size of bge-m3 vectors):
+   ```bash
+   npx wrangler vectorize create chunks --dimensions=1024 --metric=cosine
+   ```
+4. **Create the file bucket** (uploads and logos):
+   ```bash
+   npx wrangler r2 bucket create website-assistant-files
+   ```
+5. **Set the secret key** (a long random string, 32+ characters):
+   ```bash
+   npx wrangler secret put SECRET_KEY
+   ```
+   > **Never change or lose `SECRET_KEY`** after setup. It encrypts the saved API keys and signs
+   > sessions. Keep a copy somewhere safe (a password manager).
+6. **Create the tables**:
+   ```bash
+   npx wrangler d1 migrations apply website-assistant --remote
+   ```
+7. **Build the admin UI** (`frontend/` into `frontend/dist`, plus `widget.js`):
+   ```bash
+   npm run build
+   ```
+8. **Deploy**:
+   ```bash
+   npx wrangler deploy
+   ```
+   It prints the Worker's address, e.g. `https://website-assistant.<you>.workers.dev`.
+   Open `https://website-assistant.<you>.workers.dev/setup` to finish setup.
+9. **Add a custom domain** (recommended, e.g. `chat.example.com`): Cloudflare dashboard →
+   Workers & Pages → *website-assistant* → Settings → **Domains & Routes** → *Add* → *Custom
+   domain*. The domain must be on a zone in your Cloudflare account; Cloudflare issues the
+   certificate. See [section 12](#12-https-and-custom-domains) for a separate admin host name.
 
-If GPU is selected but no GPU is available, the app keeps working on the CPU and the page shows a warning.
+`npm run deploy` does steps 7 and 8 together. Running the steps again is safe; migrations are
+applied only once.
 
-### Embedding models: local or cloud
+### Embedding models: Workers AI or cloud
 
-**Settings → Embeddings** lists the available models with their languages, the time for
-1,000 pages on this server (measured once something has been indexed) and, for cloud models,
-the cost:
+**Settings → Embeddings** lists the models with their languages, the time for 1,000 pages
+(measured once something has been indexed) and, for cloud models, the cost:
 
 | Model | Where | Notes |
 |---|---|---|
-| `BAAI/bge-m3` (default) | Local | Best local quality, 100+ languages; slow without a GPU |
-| `intfloat/multilingual-e5-small` | Local | ~10× faster on a CPU, ~100 languages, somewhat weaker search |
-| `BAAI/bge-small-en-v1.5` | Local | Fast, English only |
-| OpenAI `text-embedding-3-small` | Cloud | Thousands of pages in a minute or two, ~$0.02 per 1M tokens |
-| OpenAI `text-embedding-3-large` | Cloud | Most accurate OpenAI model |
-| Google `gemini-embedding-001` | Cloud | Strong multilingual quality, free tier with rate limits |
-| Mistral `mistral-embed` | Cloud | Inexpensive, best for European languages |
+| `@cf/baai/bge-m3` (default) | Cloudflare Workers AI | BGE-M3, 100+ languages; ready at once, free daily allowance |
+| OpenAI `text-embedding-3-small` | Cloud | ~$0.02 per 1M tokens, requested at 1024 dimensions |
+| OpenAI `text-embedding-3-large` | Cloud | Most accurate OpenAI model, requested at 1024 dimensions |
+| Google `gemini-embedding-001` | Cloud | Strong multilingual quality, free tier with rate limits, 1024 dimensions |
+| Mistral `mistral-embed` | Cloud | Inexpensive, best for European languages (1024 dimensions) |
+| `BAAI/bge-m3`, `intfloat/multilingual-e5-small`, `BAAI/bge-small-en-v1.5` | Local | Listed, but [need the self-hosted version](#features-that-need-the-self-hosted-version) |
 
 Cloud models need an API key (leave it blank to reuse the key of a saved AI model from the same
 provider) and send document text and visitor questions to the provider. Switching models
 re-indexes all content once.
 
-When an upload would take a local model more than about 10 minutes, it isn't indexed right
+When an upload would take the current model more than about 10 minutes, it isn't indexed right
 away: the Documents tab shows the estimate next to each cloud model's time and cost, and the
-admin chooses to index locally anyway or switch to a cloud model.
+admin chooses to index anyway or switch models.
 
 ## 3. Setup wizard
 
-Open `http://<server>:8001/setup`. The wizard is available only until setup is completed.
+Open `https://<your-worker-address>/setup`. The wizard is available only until setup is completed.
 
 1. **Super admin account**: name, email and password (at least 10 characters).
 2. **Mode**: *Cloud* (many clients) or *On-premise* (one client). See [section 11](#11-cloud-vs-on-premise).
-3. **Public domain**: the address websites load the widget from, e.g. `chat.sprintgames.online`
-   (no `http://`). For local testing you can use `localhost:8000`.
+3. **Public domain**: the address websites load the widget from, e.g. `chat.example.com`
+   (no `https://`). For local testing you can use `localhost:8787`.
 4. **First AI model**: pick a provider, then fill in the URL, model name and API key.
    **Test connection** must succeed before you can continue.
-5. **Embedding model**: `BAAI/bge-m3` by default (multilingual, including Malayalam). It
-   downloads once, with a progress bar, and you can continue while it downloads.
-6. **Client** (on-premise only): the single organisation this server serves.
+5. **Embedding model**: `@cf/baai/bge-m3` (Workers AI) is already ready; press **Continue**.
+6. **Client** (on-premise only): the single organisation this installation serves.
 7. **Done**: opens the dashboard.
 
 ## 4. Adding a client
@@ -187,9 +189,11 @@ The client detail page has these tabs:
 website on or off. While it is off, the chat bubble doesn't appear and the public chat API
 refuses messages; **Test chat** keeps working, and nothing else changes (content, settings, crawls).
 
+Deleting a client also deletes its vectors (Vectorize) and files (R2).
+
 ## 5. Website crawling
 
-**Crawl now** (Website tab) queues a job for the worker:
+**Crawl now** (Website tab) queues a crawl job:
 
 - Reads `robots.txt`, respecting `Disallow`, `Crawl-delay` and its `Sitemap:` entries.
 - Tries sitemaps first (`/sitemap.xml`, `/sitemap_index.xml`, `/wp-sitemap.xml`, including
@@ -200,45 +204,55 @@ refuses messages; **Test chat** keeps working, and nothing else changes (content
   - *Full page content* (default) removes the header, menus, footer, scripts and forms and
     keeps everything else, including small facts such as "Located on: Second Floor" or
     opening hours.
-  - *Main article only* (trafilatura) suits blogs and news sites.
+  - *Main article only* keeps the page's main block (its `<article>`, `<main>`, or the block
+    with the most paragraph text) and suits blogs and news sites.
 - Unchanged pages (same content hash) are skipped. Changed pages are re-indexed. Pages that
   disappeared (404/410, or no longer found after a complete crawl) are removed along with
-  their passages.
+  their passages and vectors.
 - **Include/exclude patterns** are wildcards matched against the URL path, e.g. `/shop/*`
   or `*?print=*`.
+
+**How jobs run on Cloudflare.** A Worker invocation may use only a few milliseconds of CPU, so a
+crawl or a large document is processed in small steps: a page or a batch of passages at a time.
+Each step saves its position, so jobs continue where they stopped. While the job's progress is
+open in the admin UI, every progress check advances it; otherwise the per-minute scheduler does,
+so jobs also finish with the browser closed (more slowly). Cancel and Retry work as before.
 
 Automatic re-crawls run daily or weekly at a time you choose (Settings → Crawl schedule).
 They re-crawl every active client and re-check their documents.
 
 ## 6. Documents
 
-Supported formats: **PDF, DOCX, XLSX, TXT, MD**, up to 1 GB each. PDF pages without a text
-layer (scans) are read with Tesseract OCR, several pages in parallel (one per CPU core by default).
-Set the OCR languages with `OCR_LANGS` (installed: `eng`, `mal`, `hin`, `ara`, e.g. `eng+mal`);
-each extra language slows OCR down. Pages that already contain text skip OCR entirely.
+Supported formats: **PDF, DOCX, XLSX, TXT, MD**, up to **100 MB** each (Cloudflare's request
+size limit on the free plan). PDF, Word and Excel files are converted with Workers AI
+(`toMarkdown`); text and Markdown files are read directly. Scanned PDFs (images without a text
+layer) can't be read here: they are marked *"No text found: this looks like a scanned PDF."*
+(the self-hosted version reads them with OCR).
 
-**Upload** (default): drag files into the Documents tab. They're stored on the server in
-`DATA_DIR/clients/<client_id>/documents/` and indexed automatically.
+**Upload**: drag files into the Documents tab. They're stored in R2 and indexed automatically.
+The extracted text is kept, so re-indexing doesn't convert the file again.
 
-Indexing runs in the worker, so it carries on when you leave the Documents tab or close the
-browser; the tab shows the progress again when you come back. If the worker restarts in the
-middle (e.g. `docker compose up -d --build`), indexing, crawl and re-index jobs start again
-automatically (up to 3 times; unchanged files are skipped). A document deleted while it is being
-indexed is skipped, and the rest of the job continues.
+Indexing runs as a background job, so it carries on when you leave the Documents tab or close
+the browser; the tab shows the progress again when you come back. A large document is built
+up in the background and replaces the old version only when it is complete, so search never
+sees a half-indexed document. A document deleted while it is being indexed is skipped, and the
+rest of the job continues.
 
 **Use / ignore a document.** Each document has a **Use** checkbox (ticked by default); the box
 in the column header ticks or unticks all of them at once. The assistant answers from every
 ticked document, whatever its subject (for example a manual for another product or a letter),
 and never from unticked ones. Unticked documents stay indexed, so ticking them again is instant.
-Useful for drafts, outdated versions, internal files, or documents you don't want answered from.
 
 **Key information** (Documents → Answering) is always given to the assistant, whatever search
 finds: put the business's opening hours, address and contact details there.
 
+**Watched folders** need the self-hosted version: saving a folder path or **Scan now** answers
+with a message saying so.
+
 ## 7. AI models
 
-**Settings → AI models → Add model.** All calls go through LiteLLM, so you can add or switch
-models without restarting anything.
+**Settings → AI models → Add model.** Calls go straight to each provider's API, so you can add
+or switch models without deploying anything.
 
 | Provider | Base URL (pre-filled) | Example model |
 |---|---|---|
@@ -248,24 +262,23 @@ models without restarting anything.
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1` | `kimi-k2-0905-preview` |
 | DeepSeek / Mistral / Groq / OpenRouter | pre-filled | see the provider's docs |
 | DeepInfra (Qwen, Llama and other open models, no GPU needed) | `https://api.deepinfra.com/v1/openai` | `Qwen/Qwen3-235B-A22B-Instruct-2507` |
-| **Bionic**, Ollama, vLLM, LM Studio, other OpenAI-compatible | `http://host.docker.internal:<port>/v1` | e.g. `qwen2.5-7b-instruct` |
+| Other OpenAI-compatible server | its public `https://…/v1` address | e.g. `qwen2.5-7b-instruct` |
 
 - **Test connection** sends a small prompt and shows the reply and the response time, or the
   error.
 - **API keys** are encrypted at rest with `SECRET_KEY` and are never shown again; only the
   last 4 characters are displayed.
-- **Default model**: used by every client that hasn't picked its own. Per-client choice is on
-  client → AI model.
-- **Fallback model**: used automatically when the main model fails or times out. The
-  timeout is set per model under advanced options.
-- **Costs**: optionally enter USD per 1M input/output tokens. Otherwise LiteLLM's built-in
-  price list is used. Local models cost 0. Usage and cost appear in Stats and on the
-  Dashboard.
+- **Model priority**: chat tries the models in order; when one fails (busy, rate-limited, down)
+  the next one answers. The timeout is set per model under advanced options.
+- **Costs**: optionally enter USD per 1M input/output tokens. Otherwise a built-in list of
+  common models' prices is used (unknown models cost 0). Usage and cost appear in Stats and on
+  the Dashboard.
 
-**Local models and Docker:** inside a container, `localhost` is the container itself. Use
-`host.docker.internal` to reach a model server running on the host. This works on Docker
-Desktop and, thanks to `extra_hosts`, on Linux too. Make sure the model server listens on an
-address Docker can reach (for example `0.0.0.0`, or the Docker bridge IP).
+**Local model servers** (Bionic, Ollama, vLLM, LM Studio) stay in the list. Cloudflare can't
+reach `localhost`, `host.docker.internal` or private-network addresses, so **Test connection**
+and chat answer: *"Local model servers can't be reached from Cloudflare. Use a cloud provider,
+or expose the server on a public HTTPS URL."* A model server published on a public HTTPS
+address (for example through a Cloudflare Tunnel) works like any OpenAI-compatible server.
 
 In on-premise mode, choosing a cloud provider shows a warning: *visitor questions and content
 will be sent outside this server.*
@@ -306,11 +319,8 @@ and lists every endpoint in a searchable table. It looks at the usual addresses
 the spec's URL or upload the file. Tick the endpoints the assistant should use: each becomes an
 action with its parameters, types, required fields and allowed values filled in, and
 confirmation switched on for anything that isn't `GET`. Endpoints you don't tick can never be
-called. Endpoints with parts that can't be mapped (header or cookie parameters, lists or nested
-objects in the body) are marked, and can't be imported when such a part is required. The spec
-is fetched with the client's API key only from the API's own host, and passes the same address
-checks as action calls. Review the imported descriptions: the assistant reads them to decide
-which action to use.
+called. The spec is fetched with the client's API key only from the API's own host, and passes
+the same address checks as action calls.
 
 **Templates → Appointment booking** adds `list_departments`, `list_doctors`, `get_slots`,
 `book_appointment` and `cancel_appointment`. They match the demo API below; adjust paths and
@@ -336,10 +346,13 @@ parameters to the client's real API.
   actions always require it); the model cannot skip it.
 - **Every parameter is validated** against its type before a call (ISO dates, phone numbers,
   emails, allowed values, required fields, at most 500 characters); unknown parameters are rejected.
-- **SSRF protection:** in cloud mode the URL must be `https://` and must not resolve to a
-  private, loopback, link-local or metadata address. This is checked when saving and again
-  before every call; redirects are never followed. On-premise mode allows internal addresses
-  (the client's API is often on the local network) and shows a warning.
+- **SSRF protection:** in cloud mode the URL must be `https://`, must not contain a user name or
+  password, and must not name a private, loopback or link-local address, `localhost`, or a
+  `.local`/`.internal` host. This is checked when saving and again before every call; redirects
+  are never followed. Workers can't resolve DNS, so a public name pointing at a private address
+  isn't detected in advance, but Cloudflare itself refuses such connections. On-premise mode
+  allows plain `http://` and internal host names; Cloudflare still can't reach private networks,
+  so such calls fail with an error saying so (expose the API on a public HTTPS URL instead).
 - **Personal data:** the model sees phone numbers and emails only as placeholders such as
   `[phone_1]`; the real values are put back only in the request to the client's API. The call
   log masks them, and saved questions contain only the placeholders.
@@ -348,27 +361,27 @@ parameters to the client's real API.
 - **Rate limits** (Settings → Rate limits): 20 action calls per conversation per hour and
   3 confirmed changes per conversation per day by default. Calls time out after the configured
   timeout; only `GET` requests are retried, once, on connection errors.
-- **Recent calls** on the tab (and the retention setting) cover every call, with status and time.
 - Disabling the feature keeps the configuration but stops using it immediately.
 
 ### Demo with the mock booking API
 
 ```bash
-pip install fastapi uvicorn            # on the host, from the repository folder
-uvicorn demo.mock_booking_api:app --host 0.0.0.0 --port 8100
+node demo/mock_booking_api.mjs        # http://127.0.0.1:8100, key demo-key
 ```
 
-Switch to **On-premise** mode (the demo runs on plain HTTP on the host), then for the client:
-API URL `http://host.docker.internal:8100`, authentication **Header** `X-API-Key`, key
-`demo-key`, health check path `/health`. Click **Test connection**, add the **Appointment
-booking** template and ask in Test chat: *"I need a cardiologist on Monday"*, then
+Cloudflare can only call public HTTPS addresses, so publish it first, e.g. with
+`cloudflared tunnel --url http://localhost:8100`, and use the `https://…trycloudflare.com`
+address it prints as the **API URL** (authentication **Header** `X-API-Key`, key `demo-key`,
+health check path `/health`). With `wrangler dev` on the same computer you can instead switch to
+**On-premise** mode and use `http://127.0.0.1:8100`. Click **Test connection**, add the
+**Appointment booking** template and ask in Test chat: *"I need a cardiologist on Monday"*, then
 *"Book 9:30 for Sobish, phone 9876543210"* and press **Confirm**.
 
 ### Model requirements
 
-Actions need a model with reliable tool calling: GPT-4o-mini or newer, Claude, Gemini, or a
-local Qwen 7B or larger (Ollama, vLLM). Small models such as Qwen 1.5B are not reliable. If a
-model rejects tools, the assistant answers from the content as usual and logs a warning.
+Actions need a model with reliable tool calling: GPT-4o-mini or newer, Claude, Gemini, or
+Qwen 7B or larger (e.g. on DeepInfra). Small models are not reliable. If a model rejects tools,
+the assistant answers from the content as usual and logs a warning.
 
 ## 9. Embedding the widget
 
@@ -384,16 +397,16 @@ Copy the line from client → **Embed code**:
   keyboard accessible (Enter sends, Escape closes) and full-screen on phones.
 - Branding (colour, logo, greeting, position, language, "Powered by") is loaded from
   `/api/client/<id>/config`. That response contains branding only, no secrets.
-- Visitors see only the answer, not where it came from (pages and documents stay private). The notice "Chats are
-  recorded to improve service" is shown and editable in Settings → Privacy.
+- Visitors see only the answer, not where it came from (pages and documents stay private). The
+  notice "Chats are recorded to improve service" is shown and editable in Settings → Privacy.
 - The widget only works on the client's **allowed domains**. Requests from other origins, or
   with no origin at all, are rejected.
 
 **Try it locally:** add `localhost:5500` to the client's allowed domains, then:
 
 ```bash
-cd demo && python -m http.server 5500
-# open http://localhost:5500/?client=lulu-kochi&api=http://localhost:8000
+node demo/serve.mjs
+# open http://localhost:5500/?client=lulu-kochi&api=https://chat.example.com   (or api=http://localhost:8787)
 ```
 
 ## 10. Users and roles
@@ -415,133 +428,165 @@ later in **Settings → Clients mode**. Switching keeps all content, settings, u
 Switching to on-premise needs at most one client (delete the others first, nothing is deleted
 automatically); that client becomes the assistant.
 
-| | Cloud | On-premise |
+| | Cloud | On-premise (single client) |
 |---|---|---|
 | Clients | many | exactly one (the Clients list is skipped) |
-| Typical model | hosted API (GPT, Claude, …) | local (Qwen via Bionic, Ollama, vLLM) |
-| External calls | to the chosen AI provider | none needed once the embedding model is downloaded |
-| Admin UI | usually behind HTTPS on its own domain | keep it internal: `ADMIN_BIND_IP=127.0.0.1` |
+| API actions | `https://` public APIs only | also `http://` and internal host names (which Cloudflare can't reach; see [section 8](#security)) |
+| Admin UI | usually on its own host name (`ADMIN_HOSTNAME`) | same |
 
-**Fully offline on-premise:** download `BAAI/bge-m3` once (the setup wizard does it), use a
-local model, and the server needs no internet access. LiteLLM's price list is bundled, and
-Hugging Face telemetry is disabled.
+A truly on-premise installation (local models, no internet) needs the
+[self-hosted version](https://github.com/sobishj/Chatbot).
 
-## 12. HTTPS
+## 12. HTTPS and custom domains
 
-Websites served over HTTPS can only load the widget over HTTPS. Caddy is included as an
-**optional** compose profile, off by default. It obtains Let's Encrypt certificates
-automatically.
+Cloudflare serves the Worker over HTTPS with its own certificates, on `*.workers.dev` and on any
+custom domain you add (Workers & Pages → *website-assistant* → Settings → Domains & Routes →
+Add → Custom domain). Websites served over HTTPS can load the widget from either.
 
-1. Point DNS at the server, e.g. `chat.sprintgames.online`, and optionally
-   `admin.sprintgames.online`.
-2. In `.env`:
-   ```
-   HTTPS_PUBLIC_DOMAIN=chat.sprintgames.online
-   HTTPS_ADMIN_DOMAIN=admin.sprintgames.online   # optional; leave empty to keep the admin internal
-   APP_BIND_IP=127.0.0.1                          # only Caddy talks to the app directly
-   ADMIN_BIND_IP=127.0.0.1
-   FORWARDED_ALLOW_IPS=*                          # trust Caddy's X-Forwarded-* headers
-   ```
-3. `docker compose --profile https up -d`
-4. Set **Settings → Public domain** to `chat.sprintgames.online`.
+**Separate admin host name** (like the separate admin port of the self-hosted version): add two
+custom domains, e.g. `chat.example.com` (public) and `admin.example.com` (admin), and set the
+`ADMIN_HOSTNAME` variable in `wrangler.jsonc` to `"admin.example.com"`, then deploy. The admin
+API then answers only on `admin.example.com`, and the public chat API only on the other host
+names. Set **Settings → Public domain** to `chat.example.com`. To restrict the admin host name
+further, put it behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/).
 
-Ports 80 and 443 must be open. Session cookies are marked `Secure` automatically when the
-admin UI is reached over HTTPS.
+Session cookies are marked `Secure` automatically over HTTPS.
 
 ## 13. Backups and restore
 
-**System health → Download backup** streams a PostgreSQL dump of everything: settings,
-users, clients, pages, passages, questions and jobs.
+**System health → Download backup** downloads a JSON export of every table: settings, users,
+clients, pages, passages, questions and jobs.
+
+- Saved API keys in the export stay encrypted and only work with the **same `SECRET_KEY`**.
+- Uploaded files and logos live in the R2 bucket and are not in the export; Vectorize vectors
+  are rebuilt by **Re-index**.
+- D1 also keeps 7 days of point-in-time history on the free plan (Time Travel):
+  `npx wrangler d1 time-travel restore website-assistant --timestamp=<ISO time>`.
+- To restore an export into a new database, apply the migrations and insert the rows (each
+  table is a list of rows with its column names).
+
+## 14. Command line (developers and recovery)
+
+Everything is available in the UI. For recovery, from `worker/`:
 
 ```bash
-# restore into a fresh install (same SECRET_KEY in .env!)
-docker compose exec -T db pg_restore -U chatbot -d chatbot --clean --if-exists < website-assistant-YYYYMMDD.dump
-```
-
-- API keys in the dump only work with the **same `SECRET_KEY`**. Back up `.env` too.
-- Uploaded files, logos and the model cache live in the `appdata` volume. Back them up with
-  `docker run --rm -v website-assistant_appdata:/data -v "$PWD":/out alpine tar czf /out/appdata.tgz -C /data .`
-
-## 14. CLI (developers and recovery)
-
-Everything is available in the UI. The CLI calls the same service functions.
-
-```bash
-docker compose exec app python cli.py crawl lulu-kochi
-docker compose exec app python cli.py index-docs lulu-kochi [--force]
-docker compose exec app python cli.py ask lulu-kochi "Where is the ASICS store?"
-docker compose exec app python cli.py stats lulu-kochi --days 30
-docker compose exec app python cli.py reset-admin-password admin@example.com
+node scripts/reset-admin-password.mjs you@example.com "new password"   # also signs the user out everywhere
+npx wrangler d1 execute website-assistant --remote --command "SELECT client_id, name FROM clients"
+npx wrangler tail                                                     # live logs of the deployed Worker
+npx wrangler vectorize info chunks                                    # vectors stored
 ```
 
 ## 15. Development and tests
 
 ```
-app/
-  actions/      API actions: tool schema, executor (validation, SSRF guard), confirmations, chat flow
-  admin/        admin API routes, auth dependencies, CSRF middleware, SPA hosting
-  api/          public API (chat, config, widget.js, logo) and /health
-  analytics/    stats, conversations, CSV export, retention
-  chat/         PII masking, language detection, prompt, chat service (fallback, logging)
-  crawler/      robots/sitemaps/link crawler, text extraction, crawl service
-  db/           SQLAlchemy models, Alembic migrations (run automatically at startup)
-  documents/    PDF/DOCX/XLSX/TXT/MD readers, OCR, uploads
-  embeddings/   local models (download with progress, loading), cloud embedding APIs, model catalog
-  indexer/      chunking (~500 tokens, 50 overlap), embedding, vector column management
-  llm/          LiteLLM wrapper and provider presets
-  search/       hybrid search (pgvector + full-text, RRF)
-  security/     Argon2 passwords, Fernet API-key encryption, signed sessions, CSRF
-  services/     settings, clients, users, AI models, jobs, rate limits
-  worker/       job runner, handlers, scheduler
-  widget/       widget.js (vanilla JS, Shadow DOM)
-frontend/       React + TypeScript admin UI (built into the image by Docker)
-cli.py, install.sh, docker-compose.yml, Dockerfile, deploy/Caddyfile, demo/
-tests/
+worker/
+  src/
+    actions/    API actions: tool schema, executor (validation, SSRF guard), confirmations, chat flow, OpenAPI import
+    analytics/  stats, conversations, CSV export, retention
+    chat/       PII masking, language detection, prompt, essential pages, chat service, streaming
+    crawler/    robots.txt, sitemaps, crawl job, HTML tokenizer and extraction rules
+    documents/  uploads (R2), toMarkdown parsing, sync job
+    embeddings/ Workers AI and cloud embedding APIs, model catalog
+    indexer/    chunking (~500 tokens, 50 overlap), resumable indexing, Vectorize clean-up
+    llm/        OpenAI-compatible, Anthropic and Gemini adapters, provider presets, prices
+    routes/     public API, /health, admin API routers
+    search/     hybrid search (Vectorize + FTS5, RRF)
+    security/   PBKDF2 passwords, AES-GCM secrets, signed sessions, CSRF
+    services/   settings, clients, users, AI models, jobs, rate limits, embeddings
+    worker/     job runner, handlers, scheduler (cron)
+  migrations/   D1 schema
+  test/         vitest tests (run inside the Workers runtime)
+  scripts/      asset build, mock model server, password reset
+  wrangler.jsonc
+app/widget/     widget.js (vanilla JS, Shadow DOM), served unchanged as a static asset
+frontend/       React + TypeScript admin UI
+demo/           demo page and mock booking API
 ```
 
 ```bash
-echo "INSTALL_DEV=true" >> .env && docker compose up -d --build   # include pytest + ruff
-docker compose exec app pytest              # unit + integration tests (uses a separate <db>_test database)
-docker compose exec app ruff check app tests cli.py
+cd worker
+npm install
+cp .dev.vars.example .dev.vars          # set SECRET_KEY
+npx wrangler d1 migrations apply website-assistant --local
+npm run build                           # the admin UI must exist before `wrangler dev`
+npm run dev                             # http://localhost:8787  (D1/R2 local, Vectorize/Workers AI remote)
+npm test                                # vitest
+npx tsc --noEmit                        # type check
 
-cd frontend && npm install && npm run dev   # UI dev server on :5173, proxies /api to :8001
+cd ../frontend && npm install && npm run dev   # UI dev server on :5173, proxies /api to :8787
 ```
 
-Tests use a fake embedder and fake LLMs (plain and tool-calling), and mock the clients' APIs,
-so they need neither the 2 GB model, a model server nor network access.
+`wrangler dev` uses your Cloudflare account's real Vectorize index and Workers AI (they have no
+local simulator); D1 and R2 are local. `node scripts/mock-llm.mjs` starts an OpenAI-compatible
+mock model on `http://127.0.0.1:8799/v1`; with `DEV_ALLOW_PRIVATE_URLS="1"` in `.dev.vars` you can
+add it as an "Other OpenAI-compatible server" for tests without API keys.
+
+Tests use in-memory fakes for Vectorize and Workers AI, scripted LLMs (plain and tool-calling)
+and a mocked network, so they need no Cloudflare account or API keys.
 
 ## 16. Configuration reference
 
-`.env` holds bootstrap settings only. Everything else lives in the database and is edited in
-the UI.
+Everything a user can change lives in D1 and is edited in the UI. The Worker itself has:
 
-| Variable | Default | Purpose |
+| Setting | Where | Purpose |
 |---|---|---|
-| `DATABASE_URL` | generated | SQLAlchemy URL of the Postgres database |
-| `POSTGRES_USER` / `POSTGRES_DB` / `POSTGRES_PASSWORD` | `chatbot` / `chatbot` / generated | Database container credentials |
-| `SECRET_KEY` | generated | Encrypts API keys, signs sessions. **Never change after setup.** |
-| `APP_PORT` | `8000` | Public chat API and widget.js |
-| `ADMIN_PORT` | `8001` | Admin UI |
-| `APP_BIND_IP` / `ADMIN_BIND_IP` | `0.0.0.0` | Host interface to publish on (`127.0.0.1` = internal only) |
-| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are trusted |
-| `WATCHED_HOST_DIR` | `./watched` | Host folder mounted read-only at `/mnt/watched` |
-| `LOG_LEVEL` | `INFO` | |
-| `OCR_LANGS` | `eng` | Tesseract languages for scanned PDFs, joined with `+` |
-| `OCR_WORKERS` | `0` | Pages OCR'd in parallel (0 = one per CPU core) |
-| `OCR_DPI` | `200` | Resolution scans are read at; 300 for very small print (about 40% slower) |
-| `INSTALL_DEV` | `false` | Include test tools in the image |
-| `TORCH_VARIANT` | `cpu` | PyTorch build: `cpu` or `cu124` for NVIDIA GPUs (see [GPU acceleration](#gpu-acceleration-optional)) |
-| `COMPOSE_FILE` | unset | Set to `docker-compose.yml:docker-compose.gpu.yml` to give the containers the GPU |
-| `HTTPS_PUBLIC_DOMAIN` / `HTTPS_ADMIN_DOMAIN` | empty | Domains for the optional Caddy `https` profile |
+| `SECRET_KEY` | `wrangler secret put SECRET_KEY` (`.dev.vars` in development) | Encrypts API keys, signs sessions. **Never change after setup.** |
+| `ADMIN_HOSTNAME` | `vars` in `wrangler.jsonc` | Optional: serve the admin API only on this host name |
+| `DEV_ALLOW_PRIVATE_URLS` | `.dev.vars` only | Development only: allow model/API URLs on this computer |
+| `DB` | `d1_databases` | The D1 database |
+| `VECTORIZE` | `vectorize` | The `chunks` index (1024 dims, cosine) |
+| `AI` | `ai` | Workers AI (embeddings, document conversion) |
+| `FILES` | `r2_buckets` | The R2 bucket for uploads and logos |
+| `triggers.crons` | `wrangler.jsonc` | The per-minute scheduler (`* * * * *`) |
 
 ## 17. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Widget doesn't appear | Browser console shows `[Website Assistant] not loaded: config 403`: add the site's domain under **Allowed domains**. HTTPS sites need the widget served over HTTPS. |
-| "Could not connect" when testing a local model | Use `host.docker.internal`, not `localhost`, and make sure the model server listens on a reachable interface. |
-| Crawl finds few pages | Check robots.txt, the include/exclude patterns and the page limit. Sites that render their content with JavaScript only aren't supported yet. |
+| Widget doesn't appear | Browser console shows `[Website Assistant] not loaded: config 403`: add the site's domain under **Allowed domains**. |
+| "Local model servers can't be reached from Cloudflare" | Use a cloud provider, or publish the model server on a public HTTPS address (e.g. a Cloudflare Tunnel). |
+| Crawl finds few pages | Check robots.txt, the include/exclude patterns and the page limit. Sites that render their content with JavaScript only aren't supported (their page description is still used). |
+| Crawl or indexing is slow | Keep the job's progress open in the admin UI: every progress check advances it. Without it, the scheduler advances jobs once a minute. |
+| New pages aren't found by meaning right after indexing | Vectorize makes new vectors searchable within about a minute; keyword search works at once. |
 | Answers marked unanswered although correct | Lower **Settings → Answers → confidence threshold**. Test chat shows each answer's score. |
-| Worker "Problem" on System health | `docker compose logs worker` |
-| Forgot admin password | `docker compose exec app python cli.py reset-admin-password you@example.com` |
+| Worker/Scheduler "Problem" on System health | The cron trigger isn't running: check Workers & Pages → *website-assistant* → Settings → Trigger events, and `npx wrangler tail`. |
+| Error 1102 (CPU limit) in the logs | A page or document step needed more CPU than the free plan allows; the job retries it. Very large pages can need Workers Paid. |
+| Forgot admin password | `node scripts/reset-admin-password.mjs you@example.com "new password"` |
 | API key shows "Unreadable" | `SECRET_KEY` changed. Restore the old key or re-enter the API keys. |
+
+## Free plan limits
+
+Checked against Cloudflare's documentation in November 2026; Cloudflare changes these from time
+to time.
+
+| Limit (free plan) | Value | What it means here |
+|---|---|---|
+| Worker requests | 100,000 per day | Chat messages, widget loads (`widget.js` and config) and admin use together |
+| CPU time | 10 ms per request and per cron run | Crawling and indexing run as small resumable steps; chat is mostly waiting on the model |
+| Subrequests | 50 per invocation (fetch, D1, R2) | Each job step stays well below it |
+| D1 | 5 GB per account, 500 MB per database | Pages, passages and questions; plenty for most sites |
+| D1 queries | 50 per invocation | Batched where possible |
+| Vectorize | 5 million stored dimensions, 30 million queried per month | At 1024 dimensions ≈ **4,880 passages in total**, across all clients |
+| Workers AI | 10,000 neurons per day | bge-m3 uses ~1,075 neurons per million tokens: roughly 9 million tokens of indexing/questions per day |
+| R2 | 10 GB storage, 1M writes and 10M reads per month | Uploads, logos and document text |
+| Request body | 100 MB | The largest document upload |
+| Cron triggers | 5 per account | This Worker uses one |
+
+The **Vectorize allowance is the limit most installations meet first**: about 4,880 passages is
+a few hundred web pages plus some documents. The System page shows the use. Beyond it,
+Cloudflare's paid plans raise every limit above.
+
+## Features that need the self-hosted version
+
+These are in the admin UI (nothing is hidden) but can't work on Cloudflare. Choosing them shows a
+clear message. They work in the self-hosted version: [github.com/sobishj/Chatbot](https://github.com/sobishj/Chatbot).
+
+| Feature | On Cloudflare |
+|---|---|
+| **Local LLMs** (Bionic, Ollama, vLLM, LM Studio on `localhost` or the local network) | Fail fast with *"Local model servers can't be reached from Cloudflare…"*. A model server on a public HTTPS address works. |
+| **Local embedding models** (Hugging Face `BAAI/bge-m3`, `multilingual-e5-small`, `bge-small-en`) | Choosing one returns a message; the current model stays. Use Workers AI bge-m3 (the same model) or a cloud model. |
+| **Compute device (CPU/GPU)** | Saved but has no effect; the System page reports no GPU. |
+| **Watched folders** | Saving a folder or **Scan now** returns a message. Upload the files instead. |
+| **Tesseract OCR** for scanned PDFs | Scanned PDFs are marked *"No text found: this looks like a scanned PDF."* |
+| **Private-network API actions** | Cloudflare can't reach private addresses; publish the API on a public HTTPS URL. |
+| **Fully offline operation** | Needs a server of your own. |

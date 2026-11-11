@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `npm run dev` (wrangler dev). Never commit .dev.vars.
+# In production, set the secret with: npx wrangler secret put SECRET_KEY
+SECRET_KEY="replace-with-a-long-random-string-at-least-32-characters"
+
+# Development only: let model and API URLs point at this computer (e.g. scripts/mock-llm.mjs,
+# demo/mock_booking_api.mjs). Never set this in production.
+DEV_ALLOW_PRIVATE_URLS="0"

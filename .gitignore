@@ -1,29 +1,13 @@
 # Secrets / local config
 .env
-
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-
-# Local data (Docker volumes hold the real data)
-data/
+.dev.vars
+worker/.dev.vars
 
 # Editors / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Watched document folders (contents are client data)
-watched/*
-!watched/.gitkeep
 
 # Frontend
 frontend/node_modules/
@@ -33,4 +17,3 @@ frontend/*.tsbuildinfo
 # Worker
 worker/node_modules/
 worker/.wrangler/
-worker/.dev.vars
