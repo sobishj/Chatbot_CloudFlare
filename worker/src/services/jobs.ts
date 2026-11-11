@@ -72,10 +72,16 @@ export async function enqueue(
 
 /** Queue a fresh copy of a finished job (its resume cursor is not copied). */
 export async function retry(db: D1Database, job: Job, userId: number | null = null): Promise<Job> {
-  const { _cursor, _attempts, ...payload } = job.payload || {};
+  return enqueue(db, job.type, job.client_id, publicPayload(job.payload), "user", userId);
+}
+
+/** The payload without the runner's resume state (_cursor, _started, _not_before). */
+export function publicPayload(payload: Record<string, any> | null): Record<string, any> {
+  const { _cursor, _started, _not_before, ...rest } = payload || {};
   void _cursor;
-  void _attempts;
-  return enqueue(db, job.type, job.client_id, payload, "user", userId);
+  void _started;
+  void _not_before;
+  return rest;
 }
 
 /** Cancel a queued job immediately, or ask a running job to stop at its next step. */
@@ -141,9 +147,7 @@ export function jobToDict(job: Job, includeLog = false): Record<string, any> {
   };
   if (includeLog) {
     data.log = job.log;
-    const { _cursor, ...payload } = job.payload || {};
-    void _cursor;
-    data.payload = payload;
+    data.payload = publicPayload(job.payload);
   }
   return data;
 }

@@ -10,6 +10,7 @@ import { all } from "../../util/db";
 import { HttpError, json, readJson, validateBody } from "../../util/http";
 import { requireSetupCompleted, requireSuperAdmin, type AppEnv, type C } from "../context";
 import { normalizePublicDomain, startEmbeddingJob } from "./setup";
+import { kickJobs } from "../../worker/runner";
 
 const EDITABLE = ["system_prompt", "confidence_threshold", "crawl_schedule", "timezone", "rate_limits", "public_domain", "chat_notice", "retention_days", "compute_device"];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -183,6 +184,7 @@ export function registerSettings(app: Hono<AppEnv>): void {
     } else {
       await startEmbeddingJob(c.env, body.model.trim());
     }
+    kickJobs(c); // switching models queues a re-index of every client
     return json(await view(c));
   });
 }

@@ -35,6 +35,31 @@ function formatter(tz: string): Intl.DateTimeFormat {
 }
 
 const WEEKDAYS_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const NAME_LOCALES = ["en-US", "en-GB", "en-IN", "en-AU", "en-NZ", "en-ZA", "en-SG"];
+const nameFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * The zone's abbreviation like Python's ZoneInfo.tzname() ("IST", "CET", "EST"): the first English
+ * locale that knows one, else the numeric form tzdata uses ("+04", "+0530").
+ */
+function zoneName(tz: string, at: Date, offsetMinutes: number): string {
+  for (const locale of NAME_LOCALES) {
+    const key = `${locale}|${tz}`;
+    let f = nameFormatters.get(key);
+    if (!f) {
+      f = new Intl.DateTimeFormat(locale, { timeZone: tz, timeZoneName: "short" });
+      nameFormatters.set(key, f);
+    }
+    const name = f.formatToParts(at).find((p) => p.type === "timeZoneName")?.value ?? "";
+    if (name === "GMT" && offsetMinutes === 0 && tz !== "UTC" && tz !== "Etc/UTC") return "GMT";
+    if (name && !/^(GMT|UTC)[+-−]/.test(name) && name !== "GMT") return name;
+  }
+  if (offsetMinutes === 0) return "UTC";
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const off = Math.abs(offsetMinutes);
+  const hh = String(Math.floor(off / 60)).padStart(2, "0");
+  return off % 60 ? `${sign}${hh}${String(off % 60).padStart(2, "0")}` : `${sign}${hh}`;
+}
 
 /** The current local time in ``tz``; falls back to UTC for unknown zones (like Python's ZoneInfo fallback). */
 export function zonedNow(tz: string | null | undefined, at: Date = new Date()): ZonedTime {
@@ -59,6 +84,11 @@ export function zonedNow(tz: string | null | undefined, at: Date = new Date()): 
   };
   const asUtc = Date.UTC(z.year, z.month - 1, z.day, z.hour, z.minute, z.second);
   z.offsetMinutes = Math.round((asUtc - Math.floor(at.getTime() / 1000) * 1000) / 60000);
+  try {
+    z.tzName = zoneName(tz || "UTC", at, z.offsetMinutes);
+  } catch {
+    /* keep the formatter's name */
+  }
   return z;
 }
 

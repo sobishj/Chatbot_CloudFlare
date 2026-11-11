@@ -31,7 +31,10 @@ export class EmbeddingAPIError extends Error {}
  * Latin words count ~1 token per 4 letters, punctuation 1 each, and every other letter or mark
  * 0.6 (Indic, Arabic and CJK scripts take far more tokens per character than English).
  */
-export function countTokens(text: string): number {
+export const countTokens = Object.assign((text: string): number => Math.ceil(rawTokenCount(text) - 1e-9), { raw: rawTokenCount });
+
+/** The unrounded estimate; additive over space-joined words. */
+export function rawTokenCount(text: string): number {
   let tokens = 0;
   let word = 0;
   for (const ch of text) {
@@ -55,7 +58,7 @@ export function countTokens(text: string): number {
     }
   }
   if (word) tokens += Math.ceil(word / 4);
-  return Math.ceil(tokens);
+  return tokens;
 }
 
 function normalize(vector: number[]): number[] {
