@@ -191,21 +191,105 @@ function LargeUploadDialog({ info, isSuper, onClose, onIndexLocal }: { info: Lar
   );
 }
 
+// Key information is stored as one text (that's what the assistant gets); a blank line separates records.
+const KEY_FACTS_MAX = 4000;
+const toRecords = (value: string) => value.split(/\n\s*\n/).map((r) => r.trim()).filter(Boolean);
+// Blank lines inside a record would split it in two, so they are dropped.
+const cleanRecord = (text: string) => text.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim()).join("\n");
+const joinRecords = (records: string[]) => records.map(cleanRecord).filter(Boolean).join("\n\n");
+
 function KeyFacts({ client, value, onSaved }: { client: TabProps["client"]; value: string; onSaved: (s: DocsData["settings"]) => void }) {
-  const [text, setText] = useState(value);
+  const records = toRecords(value);
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState<{ index: number; text: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const { busy, run } = useAction();
+  const listBox = useRef<HTMLDivElement>(null);
+
+  const save = (next: string[], message: string) =>
+    run(async () => {
+      const settings = (await api<{ settings: DocsData["settings"] }>(`/api/admin/clients/${client.client_id}/documents/answering`, { method: "PUT", body: { key_facts: joinRecords(next) } })).settings;
+      onSaved(settings);
+      return settings;
+    }, message);
+
+  const lengthWith = (next: string[]) => joinRecords(next).length;
+  const addNext = [...records, draft];
+  const addTooLong = lengthWith(addNext) > KEY_FACTS_MAX;
+  const editNext = editing ? records.map((r, i) => (i === editing.index ? editing.text : r)) : records;
+  const editTooLong = editing !== null && lengthWith(editNext) > KEY_FACTS_MAX;
+  const used = joinRecords(records).length;
+
+  const add = async () => {
+    if (await save(addNext, "Key information added")) {
+      setDraft("");
+      // Show the new record at the bottom of the list.
+      requestAnimationFrame(() => listBox.current?.scrollTo({ top: listBox.current.scrollHeight, behavior: "smooth" }));
+    }
+  };
+  const saveEdit = async () => {
+    if (!editing) return;
+    // Emptying a record removes it.
+    const next = cleanRecord(editing.text) ? editNext : records.filter((_, i) => i !== editing.index);
+    if (await save(next, "Key information updated")) setEditing(null);
+  };
+  const remove = async (index: number) => {
+    if (await save(records.filter((_, i) => i !== index), "Key information deleted")) setConfirmDelete(null);
+  };
+
   return (
     <Field
       label="Key information (always given to the assistant)"
       htmlFor="key-facts"
       hint={`Facts the assistant must always know, whatever the visitor asks: ${client.name}'s opening hours, address, phone, parking… Keep it short. For "is it open now?" it uses the current time in the time zone set under Settings → Crawl schedule.`}
     >
-      <textarea id="key-facts" className="textarea" rows={4} maxLength={4000} value={text} onChange={(e) => setText(e.target.value)}
-        placeholder={"Open every day, 9:00 AM to 11:00 PM.\nAddress: …\nPhone: …"} />
-      <div className="row end" style={{ marginTop: 8 }}>
-        <Button kind="primary" size="sm" loading={busy} disabled={text === value}
-          onClick={() => run(async () => onSaved((await api<{ settings: DocsData["settings"] }>(`/api/admin/clients/${client.client_id}/documents/answering`, { method: "PUT", body: { key_facts: text } })).settings), "Key information saved")}>
-          Save key information
+      {records.length > 0 && (
+        // Fixed height: more records scroll inside the box instead of pushing the page down.
+        <div className="stack" role="region" aria-label="Saved key information" tabIndex={0}
+          ref={listBox}
+          style={{ gap: 8, marginBottom: 12, maxHeight: 280, overflowY: "auto", overscrollBehavior: "contain", padding: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+          {records.map((record, i) => (
+            <div key={i} style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "10px 12px", background: "var(--surface-2)" }}>
+              {editing?.index === i ? (
+                <>
+                  <textarea className="textarea" rows={Math.max(3, editing.text.split("\n").length + 1)} value={editing.text} autoFocus
+                    aria-label={`Edit key information ${i + 1}`} onChange={(e) => setEditing({ index: i, text: e.target.value })} />
+                  {editTooLong && <div className="hint" style={{ color: "var(--danger)" }}>Too long: all key information together can be at most {KEY_FACTS_MAX} characters.</div>}
+                  <div className="row end" style={{ marginTop: 8, gap: 8 }}>
+                    <Button size="sm" kind="ghost" disabled={busy} onClick={() => setEditing(null)}>Cancel</Button>
+                    <Button size="sm" kind="primary" loading={busy} disabled={editing.text === record || editTooLong} onClick={saveEdit}>Save</Button>
+                  </div>
+                </>
+              ) : (
+                <div className="row" style={{ alignItems: "flex-start", gap: 12 }}>
+                  <div style={{ flex: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{record}</div>
+                  {confirmDelete === i ? (
+                    <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                      <Button size="sm" kind="ghost" disabled={busy} onClick={() => setConfirmDelete(null)}>Keep</Button>
+                      <Button size="sm" kind="danger" loading={busy} onClick={() => remove(i)}>Delete</Button>
+                    </div>
+                  ) : (
+                    <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                      <Button size="sm" disabled={busy || editing !== null} onClick={() => { setConfirmDelete(null); setEditing({ index: i, text: record }); }}>Edit</Button>
+                      <Button size="sm" kind="ghost" icon="trash" aria-label={`Delete key information ${i + 1}`} disabled={busy || editing !== null}
+                        onClick={() => setConfirmDelete(i)} />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <textarea id="key-facts" className="textarea" rows={3} value={draft} onChange={(e) => setDraft(e.target.value)}
+        aria-label="New key information"
+        placeholder={records.length ? "Add new information…" : "Open every day, 9:00 AM to 11:00 PM.\nAddress: …\nPhone: …"} />
+      {addTooLong && <div className="hint" style={{ color: "var(--danger)" }}>Too long: all key information together can be at most {KEY_FACTS_MAX} characters.</div>}
+      <div className="row" style={{ marginTop: 8, justifyContent: "space-between" }}>
+        <span className="small muted">{used} / {KEY_FACTS_MAX} characters used</span>
+        <Button kind="primary" size="sm" icon="plus" loading={busy && editing === null && confirmDelete === null} disabled={!cleanRecord(draft) || addTooLong || busy}
+          onClick={add}>
+          Add information
         </Button>
       </div>
     </Field>

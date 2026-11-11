@@ -27,7 +27,16 @@ interface Answer {
 type Turn = { question: string; answer?: Answer; partial?: string; failed?: string; decided?: boolean };
 
 /** **bold** as the widget shows it; everything else stays plain text (no HTML from the model). */
-const withBold = (text: string) => text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 ? <strong key={i}>{part}</strong> : part));
+// Same rule as the widget: http(s) URLs become links, without trailing punctuation.
+const URL_RE = /(\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)\]])/g;
+
+const withLinks = (text: string, key: string) =>
+  text.split(URL_RE).map((part, i) =>
+    i % 2 ? <a key={`${key}-${i}`} href={part} target="_blank" rel="noopener noreferrer">{part}</a> : part,
+  );
+
+const withBold = (text: string) =>
+  text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 ? <strong key={i}>{withLinks(part, String(i))}</strong> : withLinks(part, String(i))));
 
 const newSession = () => "test-" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
 
