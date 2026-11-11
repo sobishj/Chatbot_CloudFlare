@@ -29,3 +29,8 @@ watched/*
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+
+# Worker
+worker/node_modules/
+worker/.wrangler/
+worker/.dev.vars
