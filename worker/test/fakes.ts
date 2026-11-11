@@ -99,4 +99,6 @@ export function routeFetch(route: Route): { seen: string[]; restore: () => void 
 export async function resetDb(): Promise<void> {
   const tables = ["crawl_frontier", "action_calls", "action_sessions", "questions", "chunks", "pages", "documents", "client_actions", "jobs", "user_clients", "users", "clients", "ai_models", "settings", "rate_limits"];
   await env.DB.batch(tables.map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
+  const listing = await env.FILES.list({ limit: 1000 });
+  if (listing.objects.length) await env.FILES.delete(listing.objects.map((o) => o.key));
 }
