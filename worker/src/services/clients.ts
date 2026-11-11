@@ -19,7 +19,7 @@ export const DEFAULT_BRANDING: Record<string, any> = {
   powered_by: true,
   powered_by_text: "Powered by Website Assistant",
   powered_by_url: "",
-  logo_file: null, // file name of the logo in R2 (clients/<slug>/branding/)
+  logo_file: null, // file name of the logo in KV (clients/<slug>/branding/)
 };
 
 export const DEFAULT_CRAWL_SETTINGS: Record<string, any> = {
@@ -219,7 +219,7 @@ export function validateCrawlSettings(changes: Record<string, any>): Record<stri
   return clean;
 }
 
-/** R2 key prefix for a client's uploads and branding files. */
+/** KV key prefix for a client's uploads and branding files. */
 export function clientPrefix(slug: string): string {
   return `clients/${validateSlug(slug)}/`;
 }

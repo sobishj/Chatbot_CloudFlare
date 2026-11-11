@@ -1,4 +1,4 @@
-// Configuration for `npm test` (vitest inside the Workers runtime). D1 and R2 are local;
+// Configuration for `npm test` (vitest inside the Workers runtime). D1 and KV are local;
 // Vectorize and Workers AI have no local simulator, so tests pass in-memory fakes (test/fakes.ts).
 {
   "name": "website-assistant-test",
@@ -6,5 +6,5 @@
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [{ "binding": "DB", "database_name": "website-assistant-test", "database_id": "test", "migrations_dir": "migrations" }],
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "website-assistant-test" }]
+  "kv_namespaces": [{ "binding": "FILES_KV", "id": "website-assistant-test-files" }]
 }

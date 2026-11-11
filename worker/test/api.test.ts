@@ -360,12 +360,57 @@ describe("clients, roles and statistics", () => {
     await b.post("/api/admin/clients", { client_id: "gone", name: "Gone" });
     const c = (await first<{ id: number }>(env.DB, "SELECT id FROM clients WHERE client_id = 'gone'"))!;
     await index(env, c.id, "https://gone.test/", "Gone", "Some content here.");
-    await env.FILES.put("clients/gone/documents/x.txt", "x");
+    await env.FILES_KV.put("clients/gone/documents/x.txt", "x");
     expect(env.VECTORIZE.vectors.size).toBeGreaterThan(0);
     expect((await b.del("/api/admin/clients/gone")).status).toBe(200);
     expect(env.VECTORIZE.vectors.size).toBe(0);
     expect(await first(env.DB, "SELECT id FROM chunks")).toBeNull();
-    expect(await env.FILES.get("clients/gone/documents/x.txt")).toBeNull();
+    expect(await env.FILES_KV.get("clients/gone/documents/x.txt")).toBeNull();
+  });
+
+  it("logos are stored in KV under the same key, replaced and removed", async () => {
+    const b = new Browser(env);
+    await finishSetup(b);
+    await b.post("/api/admin/clients", { client_id: "brand", name: "Brand" });
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 4, 5, 6]);
+    const upload = (bytes: Uint8Array, name: string) => {
+      const form = new FormData();
+      form.append("file", new File([bytes], name));
+      return b.req("POST", "/api/admin/clients/brand/logo", form);
+    };
+    expect((await upload(png, "logo.png")).status).toBe(200);
+    expect(new Uint8Array((await env.FILES_KV.get("clients/brand/branding/logo.png", "arrayBuffer"))!)).toEqual(png);
+    let resp = await b.get("/api/admin/clients/brand/logo");
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await resp.arrayBuffer())).toEqual(png);
+
+    // A JPG replaces the PNG (the old key is removed).
+    expect((await upload(jpg, "logo.jpg")).status).toBe(200);
+    expect(await env.FILES_KV.get("clients/brand/branding/logo.png")).toBeNull();
+    resp = await b.get("/api/admin/clients/brand/logo");
+    expect(resp.headers.get("content-type")).toBe("image/jpeg");
+    expect(new Uint8Array(await resp.arrayBuffer())).toEqual(jpg);
+
+    expect((await b.del("/api/admin/clients/brand/logo")).status).toBe(200);
+    expect(await env.FILES_KV.get("clients/brand/branding/logo.jpg")).toBeNull();
+    expect((await b.get("/api/admin/clients/brand/logo")).status).toBe(404);
+  });
+
+  it("document uploads over 25 MB are refused with a clear message", async () => {
+    const b = new Browser(env);
+    await finishSetup(b);
+    await b.post("/api/admin/clients", { client_id: "docs", name: "Docs" });
+    const form = new FormData();
+    form.append("files", new File([new Uint8Array(25 * 1024 * 1024 + 1)], "huge.pdf", { type: "application/pdf" }));
+    form.append("files", new File(["Open 9 to 5."], "hours.txt", { type: "text/plain" }));
+    const resp = await b.req("POST", "/api/admin/clients/docs/documents", form);
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { saved: { path: string }[]; errors: string[] };
+    expect(body.saved.map((d) => d.path)).toEqual(["hours.txt"]);
+    expect(body.errors).toEqual([expect.stringMatching(/^huge\.pdf: File is larger than 25 MB\./)]);
+    expect(await env.FILES_KV.get("clients/docs/documents/huge.pdf")).toBeNull();
   });
 });
 

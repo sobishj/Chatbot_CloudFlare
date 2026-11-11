@@ -1,10 +1,12 @@
 /**
  * Client documents kept in sync with ``documents`` and ``chunks``.
  *
- * * Uploads live in R2 under ``clients/<client_id>/documents/<file name>``, with their SHA-256 in
- *   the object's metadata. Watched folders need the self-hosted version.
+ * * Uploads live in Workers KV (FILES_KV) under ``clients/<client_id>/documents/<file name>``, with
+ *   their SHA-256 in the value's metadata and in ``documents.upload_hash``. KV is eventually
+ *   consistent, so the list of uploads comes from D1, and a read that returns an older copy waits
+ *   and tries again. Watched folders need the self-hosted version.
  * * PDF, Word and Excel files are converted with Workers AI (``env.AI.toMarkdown``); text and
- *   Markdown are read directly. The extracted text is kept (in the row, or in R2 when it's too
+ *   Markdown are read directly. The extracted text is kept (in the row, or in KV when it's too
  *   large for a D1 row), so re-indexing doesn't parse the file again.
  *
  * Syncing works as before: new/changed files (by SHA-256) are indexed, unchanged files are skipped,
@@ -20,15 +22,20 @@ import { indexStep, newIndexCursor, type IndexCursor } from "../indexer/indexer"
 import { sha256Hex } from "../security/crypto";
 import { clientPrefix, documentSettings } from "../services/clients";
 import { getSetting } from "../services/settings";
+import { deleteFiles, FileTooLargeError, getFile, getTextFile, keyFits, KV_MAX_VALUE_BYTES, putFile } from "../storage/files";
 import { all, first, nowIso, run, toJson } from "../util/db";
 import { UserFacingError } from "../util/http";
 import type { StepContext } from "../worker/runner";
 
 export const SUPPORTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".txt", ".md"];
-/** Cloudflare's request body limit on the Free plan is 100 MB, so that's the largest upload. */
-export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+/** Workers KV stores values of up to 25 MiB, so that's the largest upload. */
+export const MAX_UPLOAD_BYTES = KV_MAX_VALUE_BYTES;
+export const TOO_LARGE_MESSAGE = "File is larger than 25 MB. Files are stored in Workers KV, which holds at most 25 MB per file: split or compress the file and upload the parts.";
 const MAX_TEXT_CHARS = 50_000_000;
-const MAX_ROW_TEXT_BYTES = 900_000; // D1 rows hold up to 2 MB; larger texts go to R2
+const MAX_ROW_TEXT_BYTES = 900_000; // D1 rows hold up to 2 MB; larger texts go to KV
+// KV may briefly return an older copy (or nothing) right after a write: wait and retry this often.
+const KV_WAIT_MS = 15_000;
+const KV_WAIT_ATTEMPTS = 12; // about 3 minutes
 const LEADER_RE = /(?:[ \t]*[.·•_…][ \t]*){5,}/g; // dot leaders in contents pages
 
 export const WATCHED_FOLDERS_MESSAGE =
@@ -38,6 +45,8 @@ export const WATCHED_FOLDERS_MESSAGE =
 export class DocumentError extends UserFacingError {}
 class UnsupportedDocument extends Error {}
 class EmptyDocument extends Error {}
+/** KV doesn't return the file version we expect yet (eventual consistency): try again shortly. */
+class NotReadyYet extends Error {}
 
 // ----------------------------------------------------------------------------- names and keys
 function extOf(name: string): string {
@@ -87,21 +96,28 @@ export function documentToDict(doc: DocumentRow): Record<string, any> {
 }
 
 // ----------------------------------------------------------------------------- uploads
-/** Store an uploaded file in R2 and register it as pending. */
+/** Store an uploaded file in KV and register it as pending. */
 export async function saveUpload(env: Env, client: Client, filename: string, file: File): Promise<{ doc: DocumentRow; head: Uint8Array }> {
   const name = safeFilename(filename);
   if (!SUPPORTED_EXTENSIONS.includes(extOf(name))) throw new DocumentError(`Unsupported file type. Allowed: ${[...SUPPORTED_EXTENSIONS].sort().join(", ")}`);
-  if (file.size > MAX_UPLOAD_BYTES) throw new DocumentError(`File is larger than ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`);
+  if (file.size > MAX_UPLOAD_BYTES) throw new DocumentError(TOO_LARGE_MESSAGE);
   if (file.size === 0) throw new DocumentError("The file is empty.");
+  const key = uploadsPrefix(client) + name;
+  if (!keyFits(key)) throw new DocumentError("File name is too long. Rename the file and upload it again.");
   const data = await file.arrayBuffer();
   const digest = await sha256Hex(data);
-  const key = uploadsPrefix(client) + name;
-  await env.FILES.put(key, data, { customMetadata: { sha256: digest }, httpMetadata: { contentType: file.type || "application/octet-stream" } });
+  try {
+    await putFile(env.FILES_KV, key, data, { contentType: file.type || "application/octet-stream", sha256: digest });
+  } catch (exc) {
+    if (exc instanceof FileTooLargeError) throw new DocumentError(TOO_LARGE_MESSAGE);
+    throw exc;
+  }
+  // The column keeps its R2-era name (r2_key): it holds the file's KV key.
   const row = await first(
     env.DB,
-    "INSERT INTO documents (client_id, source, path, filename, size_bytes, status, error, chunk_count, uploaded_at, r2_key) VALUES (?, 'upload', ?, ?, ?, 'pending', NULL, 0, ?, ?) " +
-      "ON CONFLICT (client_id, source, path) DO UPDATE SET size_bytes = excluded.size_bytes, status = 'pending', error = NULL, uploaded_at = excluded.uploaded_at, r2_key = excluded.r2_key RETURNING *",
-    client.id, name, name, file.size, nowIso(), key,
+    "INSERT INTO documents (client_id, source, path, filename, size_bytes, status, error, chunk_count, uploaded_at, r2_key, upload_hash) VALUES (?, 'upload', ?, ?, ?, 'pending', NULL, 0, ?, ?, ?) " +
+      "ON CONFLICT (client_id, source, path) DO UPDATE SET size_bytes = excluded.size_bytes, status = 'pending', error = NULL, uploaded_at = excluded.uploaded_at, r2_key = excluded.r2_key, upload_hash = excluded.upload_hash RETURNING *",
+    client.id, name, name, file.size, nowIso(), key, digest,
   );
   return { doc: toDocument(row!), head: new Uint8Array(data.slice(0, 1024 * 1024)) };
 }
@@ -116,9 +132,8 @@ async function removeDocument(env: Env, doc: DocumentRow, client: Client): Promi
   const ids = await chunkIds(env.DB, "document_id = ?", doc.id);
   await run(env.DB, "DELETE FROM documents WHERE id = ?", doc.id); // chunks go by ON DELETE CASCADE
   await deleteVectors(env.VECTORIZE, ids);
-  const keys = [doc.r2_key ?? uploadsPrefix(client) + doc.path, doc.text_r2_key].filter((k): k is string => Boolean(k));
-  if (doc.source === "upload" && keys.length) await env.FILES.delete(keys);
-  else if (doc.text_r2_key) await env.FILES.delete(doc.text_r2_key);
+  const keys = [doc.source === "upload" ? doc.r2_key ?? uploadsPrefix(client) + doc.path : null, doc.text_r2_key].filter((k): k is string => Boolean(k));
+  await deleteFiles(env.FILES_KV, keys);
 }
 
 // ----------------------------------------------------------------------------- reading
@@ -165,19 +180,23 @@ export function cleanMarkdown(md: string, filename: string): string {
   return out.join("\n").trim();
 }
 
-/** The document's text. Throws UnsupportedDocument / EmptyDocument with a user-facing message. */
-async function readDocument(env: Env, key: string, filename: string): Promise<string> {
+/**
+ * The document's text. Throws UnsupportedDocument / EmptyDocument with a user-facing message, and
+ * NotReadyYet when KV doesn't return the uploaded version (``expectedHash``) yet.
+ */
+async function readDocument(env: Env, key: string, filename: string, expectedHash: string | null): Promise<string> {
   const ext = extOf(filename);
   if (!SUPPORTED_EXTENSIONS.includes(ext)) throw new UnsupportedDocument(`Unsupported file type: ${ext || "none"}`);
-  const obj = await env.FILES.get(key);
-  if (!obj) throw new UnsupportedDocument("Cannot read file: the uploaded file is missing.");
+  const obj = await getFile(env.FILES_KV, key);
+  if (!obj) throw new NotReadyYet("Cannot read file: the uploaded file is missing.");
+  if (expectedHash && obj.meta.sha256 && obj.meta.sha256 !== expectedHash) throw new NotReadyYet("Cannot read file: an older copy of the file was returned.");
   let text: string;
   if (ext === ".txt" || ext === ".md") {
-    text = decodeText(new Uint8Array(await obj.arrayBuffer()));
+    text = decodeText(new Uint8Array(obj.data));
   } else {
     let result: any;
     try {
-      const blob = new Blob([await obj.arrayBuffer()], { type: obj.httpMetadata?.contentType || undefined });
+      const blob = new Blob([obj.data], { type: obj.meta.contentType || undefined });
       result = await env.AI.toMarkdown({ name: filename, blob });
       if (Array.isArray(result)) result = result[0];
     } catch (exc) {
@@ -199,25 +218,38 @@ async function readDocument(env: Env, key: string, filename: string): Promise<st
   return text.slice(0, MAX_TEXT_CHARS);
 }
 
-/** Keep the extracted text: in the row, or in R2 when it's too large for a D1 row. */
-async function storeText(env: Env, client: Client, doc: DocumentRow, text: string): Promise<void> {
-  const size = new TextEncoder().encode(text).byteLength;
-  if (size <= MAX_ROW_TEXT_BYTES) {
-    if (doc.text_r2_key) await env.FILES.delete(doc.text_r2_key);
+/**
+ * Keep the extracted text: in the row, or in KV when it's too large for a D1 row (column
+ * ``text_r2_key`` keeps its R2-era name). Returns the text's SHA-256, which later reads check.
+ * Throws FileTooLargeError when the text is over KV's 25 MB value limit.
+ */
+async function storeText(env: Env, client: Client, doc: DocumentRow, text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await sha256Hex(bytes);
+  if (bytes.byteLength <= MAX_ROW_TEXT_BYTES) {
+    if (doc.text_r2_key) await deleteFiles(env.FILES_KV, [doc.text_r2_key]);
     await run(env.DB, "UPDATE documents SET extracted_text = ?, text_r2_key = NULL WHERE id = ?", text, doc.id);
   } else {
     const key = textKey(client, doc.id);
-    await env.FILES.put(key, text, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+    await putFile(env.FILES_KV, key, bytes, { contentType: "text/plain; charset=utf-8", sha256: digest });
     await run(env.DB, "UPDATE documents SET extracted_text = NULL, text_r2_key = ? WHERE id = ?", key, doc.id);
   }
+  return digest;
 }
 
-async function loadText(env: Env, docId: number): Promise<string | null> {
+/**
+ * The stored text. With ``expectedHash`` (the text was just written), throws NotReadyYet when KV
+ * doesn't return that version yet; without it, a missing KV text is null.
+ */
+async function loadText(env: Env, docId: number, expectedHash: string | null = null): Promise<string | null> {
   const row = await first<{ extracted_text: string | null; text_r2_key: string | null }>(env.DB, "SELECT extracted_text, text_r2_key FROM documents WHERE id = ?", docId);
   if (!row) return null;
   if (row.extracted_text !== null) return row.extracted_text;
-  if (row.text_r2_key) return (await (await env.FILES.get(row.text_r2_key))?.text()) ?? null;
-  return null;
+  if (!row.text_r2_key) return null;
+  if (expectedHash === null) return getTextFile(env.FILES_KV, row.text_r2_key);
+  const obj = await getFile(env.FILES_KV, row.text_r2_key);
+  if (!obj || (obj.meta.sha256 && obj.meta.sha256 !== expectedHash)) throw new NotReadyYet("The extracted text is not available yet.");
+  return new TextDecoder().decode(obj.data);
 }
 
 // ----------------------------------------------------------------------------- sync
@@ -233,7 +265,8 @@ interface SyncCursor {
   files: FileEntry[] | null; // snapshot of the current source's files
   file_index: number;
   present: string[];
-  current: { doc_id: number; digest: string | null; label: string; index: IndexCursor } | null;
+  current: { doc_id: number; digest: string | null; label: string; index: IndexCursor; text_hash?: string } | null;
+  kv_waits?: number; // retries while KV catches up with a recent write
   stats: { indexed: number; unchanged: number; removed: number; errors: number; chunks: number };
 }
 
@@ -243,21 +276,21 @@ export interface SyncOptions {
   cursorKey?: string;
 }
 
+/**
+ * The client's uploaded files, from D1 (every upload is registered there when it's saved).
+ * Not from KV list(), which can miss a file for up to a minute after it was written.
+ */
 async function listUploads(env: Env, client: Client): Promise<FileEntry[]> {
   const prefix = uploadsPrefix(client);
-  const out: FileEntry[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < 20; page++) {
-    const listing = await env.FILES.list({ prefix, cursor, limit: 1000, include: ["customMetadata"] } as R2ListOptions);
-    for (const o of listing.objects) {
-      const path = o.key.slice(prefix.length);
-      if (!path || path.includes("/") || path.startsWith("~$") || path.startsWith(".") || !SUPPORTED_EXTENSIONS.includes(extOf(path))) continue;
-      out.push({ path, key: o.key, size: o.size, hash: o.customMetadata?.sha256 ?? null });
-    }
-    if (!listing.truncated) break;
-    cursor = listing.cursor;
-  }
-  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const rows = await all<{ path: string; r2_key: string | null; size_bytes: number; upload_hash: string | null }>(
+    env.DB,
+    "SELECT path, r2_key, size_bytes, upload_hash FROM documents WHERE client_id = ? AND source = 'upload'",
+    client.id,
+  );
+  return rows
+    .filter((r) => r.path && !r.path.includes("/") && !r.path.startsWith("~$") && !r.path.startsWith(".") && SUPPORTED_EXTENSIONS.includes(extOf(r.path)))
+    .map((r) => ({ path: r.path, key: r.r2_key ?? prefix + r.path, size: r.size_bytes, hash: r.upload_hash }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 async function markError(env: Env, doc: { id: number }, message: string): Promise<void> {
@@ -284,6 +317,14 @@ export async function syncDocumentsStep(
     cur = { source_index: 0, files: null, file_index: 0, present: [], current: null, stats: { indexed: 0, unchanged: 0, removed: 0, errors: 0, chunks: 0 } };
     ctx.payload[key] = cur;
   }
+  /** KV hasn't caught up with a recent write: try this step again shortly (false when waited long enough). */
+  const waitForKv = (label: string): boolean => {
+    cur.kv_waits = (cur.kv_waits ?? 0) + 1;
+    if (cur.kv_waits > KV_WAIT_ATTEMPTS) return false;
+    ctx.notBefore(Date.now() + KV_WAIT_MS);
+    ctx.log(`${label}: waiting for the stored file to be available (attempt ${cur.kv_waits})`);
+    return true;
+  };
   const finish = async () => {
     if (options.sources.includes("folder")) {
       const settings = { ...documentSettings(client), last_scan_at: new Date().toISOString() };
@@ -313,7 +354,20 @@ export async function syncDocumentsStep(
         cur.file_index++;
         return { done: false };
       }
-      const text = (await loadText(env, c.doc_id)) ?? "";
+      let text: string;
+      try {
+        text = (await loadText(env, c.doc_id, c.text_hash ?? null)) ?? "";
+      } catch (exc) {
+        if (!(exc instanceof NotReadyYet)) throw exc;
+        if (waitForKv(c.label)) return { done: false };
+        await markError(env, { id: c.doc_id }, "The extracted text could not be read back from storage. Try indexing again.");
+        cur.stats.errors++;
+        cur.kv_waits = 0;
+        cur.current = null;
+        cur.file_index++;
+        return { done: false };
+      }
+      cur.kv_waits = 0;
       const embedder = await getEmbedder(env, (await getSetting(env.DB, "embedding")) || {});
       const outcome = await indexStep(env, embedder, c.index, text);
       const i = cur.file_index + 1;
@@ -340,6 +394,12 @@ export async function syncDocumentsStep(
       progress(((i - 1) * 100) / Math.max(files.length, 1), label);
       cur.present.push(file.path);
       let row = await first(env.DB, "SELECT * FROM documents WHERE client_id = ? AND source = ? AND path = ?", client.id, source, file.path);
+      if (!row && source === "upload") {
+        // Uploads are listed from D1: no row means it was deleted since this job started.
+        cur.present.pop();
+        cur.file_index++;
+        return { done: false };
+      }
       if (!row) {
         row = await first(
           env.DB,
@@ -359,8 +419,17 @@ export async function syncDocumentsStep(
       try {
         // A forced re-index reuses the text extracted last time if the file hasn't changed.
         const reuse = doc.file_hash !== null && doc.file_hash === digest ? await loadText(env, doc.id) : null;
-        text = reuse ?? (await readDocument(env, file.key, doc.filename));
-      } catch (exc) {
+        text = reuse ?? (await readDocument(env, file.key, doc.filename, digest));
+      } catch (caught) {
+        let exc = caught;
+        if (exc instanceof NotReadyYet) {
+          if (waitForKv(label)) {
+            cur.present.pop(); // this file is looked at again in the next step
+            return { done: false };
+          }
+          exc = new UnsupportedDocument(exc.message);
+        }
+        cur.kv_waits = 0;
         if (exc instanceof UnsupportedDocument || exc instanceof EmptyDocument) {
           await run(env.DB, "UPDATE documents SET file_hash = ? WHERE id = ?", digest, doc.id);
           await markError(env, doc, exc.message);
@@ -371,7 +440,19 @@ export async function syncDocumentsStep(
         }
         throw exc;
       }
-      await storeText(env, client, doc, text);
+      cur.kv_waits = 0;
+      let textHash: string;
+      try {
+        textHash = await storeText(env, client, doc, text);
+      } catch (exc) {
+        if (!(exc instanceof FileTooLargeError)) throw exc;
+        await run(env.DB, "UPDATE documents SET file_hash = ? WHERE id = ?", digest, doc.id);
+        await markError(env, doc, "The text in this file is larger than 25 MB, more than can be stored. Split the file into smaller ones.");
+        ctx.log(`${file.path}: extracted text over 25 MB`);
+        cur.stats.errors++;
+        cur.file_index++;
+        return { done: false };
+      }
       // Reading fills the first half of this file's share of the bar, embedding the second.
       progress(((i - 0.5) * 100) / files.length, `${label} · read`);
       cur.current = {
@@ -379,6 +460,7 @@ export async function syncDocumentsStep(
         digest,
         label,
         index: newIndexCursor({ client_id: client.id, source_type: "doc", source: doc.filename, title: stemOf(doc.filename), page_id: null, document_id: doc.id }),
+        text_hash: textHash,
       };
       return { done: false };
     }

@@ -6,8 +6,8 @@ script line**. It answers visitors' questions from the client's **website** and 
 in the visitor's language, and logs every question for analytics.
 
 This edition runs entirely on **Cloudflare's free plan**: one Worker, D1, Vectorize, Workers AI
-and R2, with cloud LLMs through API keys. The self-hosted edition (Python, PostgreSQL, Docker,
-local models) is [github.com/sobishj/Chatbot](https://github.com/sobishj/Chatbot); see
+and Workers KV, with cloud LLMs through API keys (no R2 bucket needed). The self-hosted edition
+(Python, PostgreSQL, Docker, local models) is [github.com/sobishj/Chatbot](https://github.com/sobishj/Chatbot); see
 [Features that need the self-hosted version](#features-that-need-the-self-hosted-version).
 
 Everything is managed in a web admin UI. The terminal is needed once, to deploy.
@@ -19,7 +19,7 @@ Everything is managed in a web admin UI. The terminal is needed once, to deploy.
 │  <script …>       │ ◀───────────── │          admin UI (React) + admin API          │
 └───────────────────┘   /api/chat    │          cron: crawls, indexing, scheduler     │
                                      │ D1       data + full-text search (FTS5)        │
-                                     │ Vectorize  vectors   ·  R2  files              │
+                                     │ Vectorize  vectors   ·  Workers KV  files      │
                                      │ Workers AI  embeddings (bge-m3), PDF/Office    │
                                      └──────────────┬────────────────────────────────┘
                                                     │ fetch
@@ -92,9 +92,10 @@ npm install
    ```bash
    npx wrangler vectorize create chunks --dimensions=1024 --metric=cosine
    ```
-4. **Create the file bucket** (uploads and logos):
+4. **Create the file store** (uploaded documents and logos) and paste the `id` it prints into
+   `wrangler.jsonc` (`kv_namespaces[0].id`, in place of `PASTE_YOUR_KV_NAMESPACE_ID_HERE`):
    ```bash
-   npx wrangler r2 bucket create website-assistant-files
+   npx wrangler kv namespace create FILES_KV
    ```
 5. **Set the secret key** (a long random string, 32+ characters):
    ```bash
@@ -189,7 +190,7 @@ The client detail page has these tabs:
 website on or off. While it is off, the chat bubble doesn't appear and the public chat API
 refuses messages; **Test chat** keeps working, and nothing else changes (content, settings, crawls).
 
-Deleting a client also deletes its vectors (Vectorize) and files (R2).
+Deleting a client also deletes its vectors (Vectorize) and files (Workers KV).
 
 ## 5. Website crawling
 
@@ -223,14 +224,20 @@ They re-crawl every active client and re-check their documents.
 
 ## 6. Documents
 
-Supported formats: **PDF, DOCX, XLSX, TXT, MD**, up to **100 MB** each (Cloudflare's request
-size limit on the free plan). PDF, Word and Excel files are converted with Workers AI
+Supported formats: **PDF, DOCX, XLSX, TXT, MD**, up to **25 MB** each (the largest value Workers
+KV stores). A larger file is refused with *"File is larger than 25 MB…"*; split or compress it. PDF, Word and Excel files are converted with Workers AI
 (`toMarkdown`); text and Markdown files are read directly. Scanned PDFs (images without a text
 layer) can't be read here: they are marked *"No text found: this looks like a scanned PDF."*
 (the self-hosted version reads them with OCR).
 
-**Upload**: drag files into the Documents tab. They're stored in R2 and indexed automatically.
-The extracted text is kept, so re-indexing doesn't convert the file again.
+**Upload**: drag files into the Documents tab. They're stored in Workers KV (under
+`clients/<client>/documents/<file name>`) and indexed automatically. The extracted text is kept,
+so re-indexing doesn't convert the file again.
+
+Workers KV is *eventually consistent*: a file you just replaced can take up to about a minute to
+reach every Cloudflare location. Each upload's SHA-256 is saved in D1, and the indexer checks the
+file it reads against it; if it gets an older copy (or none yet), it waits 15 seconds and tries
+again, for up to about 3 minutes, before marking the document with an error.
 
 Indexing runs as a background job, so it carries on when you leave the Documents tab or close
 the browser; the tab shows the progress again when you come back. A large document is built
@@ -458,7 +465,7 @@ Session cookies are marked `Secure` automatically over HTTPS.
 clients, pages, passages, questions and jobs.
 
 - Saved API keys in the export stay encrypted and only work with the **same `SECRET_KEY`**.
-- Uploaded files and logos live in the R2 bucket and are not in the export; Vectorize vectors
+- Uploaded files and logos live in Workers KV and are not in the export; Vectorize vectors
   are rebuilt by **Re-index**.
 - D1 also keeps 7 days of point-in-time history on the free plan (Time Travel):
   `npx wrangler d1 time-travel restore website-assistant --timestamp=<ISO time>`.
@@ -485,11 +492,12 @@ worker/
     analytics/  stats, conversations, CSV export, retention
     chat/       PII masking, language detection, prompt, essential pages, chat service, streaming
     crawler/    robots.txt, sitemaps, crawl job, HTML tokenizer and extraction rules
-    documents/  uploads (R2), toMarkdown parsing, sync job
+    documents/  uploads (Workers KV), toMarkdown parsing, sync job
     embeddings/ Workers AI and cloud embedding APIs, model catalog
     indexer/    chunking (~500 tokens, 50 overlap), resumable indexing, Vectorize clean-up
     llm/        OpenAI-compatible, Anthropic and Gemini adapters, provider presets, prices
     routes/     public API, /health, admin API routers
+    storage/    Workers KV file store (uploads, logos, large extracted texts)
     search/     hybrid search (Vectorize + FTS5, RRF)
     security/   PBKDF2 passwords, AES-GCM secrets, signed sessions, CSRF
     services/   settings, clients, users, AI models, jobs, rate limits, embeddings
@@ -509,7 +517,7 @@ npm install
 cp .dev.vars.example .dev.vars          # set SECRET_KEY
 npx wrangler d1 migrations apply website-assistant --local
 npm run build                           # the admin UI must exist before `wrangler dev`
-npm run dev                             # http://localhost:8787  (D1/R2 local, Vectorize/Workers AI remote)
+npm run dev                             # http://localhost:8787  (D1/KV local, Vectorize/Workers AI remote)
 npm test                                # vitest
 npx tsc --noEmit                        # type check
 
@@ -517,7 +525,7 @@ cd ../frontend && npm install && npm run dev   # UI dev server on :5173, proxies
 ```
 
 `wrangler dev` uses your Cloudflare account's real Vectorize index and Workers AI (they have no
-local simulator); D1 and R2 are local. `node scripts/mock-llm.mjs` starts an OpenAI-compatible
+local simulator); D1 and Workers KV are local. `node scripts/mock-llm.mjs` starts an OpenAI-compatible
 mock model on `http://127.0.0.1:8799/v1`; with `DEV_ALLOW_PRIVATE_URLS="1"` in `.dev.vars` you can
 add it as an "Other OpenAI-compatible server" for tests without API keys.
 
@@ -536,7 +544,7 @@ Everything a user can change lives in D1 and is edited in the UI. The Worker its
 | `DB` | `d1_databases` | The D1 database |
 | `VECTORIZE` | `vectorize` | The `chunks` index (1024 dims, cosine) |
 | `AI` | `ai` | Workers AI (embeddings, document conversion) |
-| `FILES` | `r2_buckets` | The R2 bucket for uploads and logos |
+| `FILES_KV` | `kv_namespaces` | Workers KV namespace for uploaded documents, logos and large extracted texts |
 | `triggers.crons` | `wrangler.jsonc` | The per-minute scheduler (`* * * * *`) |
 
 ## 17. Troubleshooting
@@ -563,13 +571,15 @@ to time.
 |---|---|---|
 | Worker requests | 100,000 per day | Chat messages, widget loads (`widget.js` and config) and admin use together |
 | CPU time | 10 ms per request and per cron run | Crawling and indexing run as small resumable steps; chat is mostly waiting on the model |
-| Subrequests | 50 per invocation (fetch, D1, R2) | Each job step stays well below it |
+| Subrequests | 50 per invocation (fetch, D1, KV) | Each job step stays well below it |
 | D1 | 5 GB per account, 500 MB per database | Pages, passages and questions; plenty for most sites |
 | D1 queries | 50 per invocation | Batched where possible |
 | Vectorize | 5 million stored dimensions, 30 million queried per month | At 1024 dimensions ≈ **4,880 passages in total**, across all clients |
 | Workers AI | 10,000 neurons per day | bge-m3 uses ~1,075 neurons per million tokens: roughly 9 million tokens of indexing/questions per day |
-| R2 | 10 GB storage, 1M writes and 10M reads per month | Uploads, logos and document text |
-| Request body | 100 MB | The largest document upload |
+| Workers KV storage | 1 GB, at most 25 MB per file | Uploads, logos and large document text; files over 25 MB are refused |
+| Workers KV writes | 1,000 per day (deletes: 1,000; lists: 1,000) | About 1,000 uploads or logo changes a day; a document whose text is over ~900 KB uses a second write |
+| Workers KV reads | 100,000 per day | Indexing reads each new or changed file once; the widget reads the logo |
+| Request body | 100 MB | All files of one upload together |
 | Cron triggers | 5 per account | This Worker uses one |
 
 The **Vectorize allowance is the limit most installations meet first**: about 4,880 passages is

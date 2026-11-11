@@ -10,7 +10,8 @@ import type { Hono } from "hono";
 import { toClient, type Client, type User } from "../../models";
 import { answerQuestion, type ChatResponse } from "../../chat/service";
 import { streamAnswer } from "../../chat/stream";
-import { chunkIds, deletePrefix, deleteVectors } from "../../indexer/cleanup";
+import { chunkIds, deleteVectors } from "../../indexer/cleanup";
+import { deleteFiles, deletePrefix, putFile } from "../../storage/files";
 import { getModel, listModels, modelToDict } from "../../services/ai_models";
 import {
   ClientError,
@@ -30,7 +31,7 @@ import { accessibleClientIds } from "../../services/users";
 import { all, first, inList, run, toJson } from "../../util/db";
 import { HttpError, json, queryInt, readJson, validateBody } from "../../util/http";
 import { clientForUser, requireSetupCompleted, requireSuperAdmin, requireUser, type AppEnv, type C } from "../context";
-import { logoKey, logoResponse, sseResponse } from "../public";
+import { allLogoKeys, logoKey, logoResponse, sseResponse } from "../public";
 import { kickJobs } from "../../worker/runner";
 
 const LOGO_MAX_BYTES = 1024 * 1024;
@@ -72,11 +73,15 @@ export async function clientDetail(c: C, client: Client, user: User): Promise<Re
 }
 
 /** Delete a client with its vectors and files (rows go by ON DELETE CASCADE). */
-export async function deleteClientEverywhere(env: { DB: D1Database; VECTORIZE: VectorizeIndex; FILES: R2Bucket }, client: Client): Promise<void> {
+export async function deleteClientEverywhere(env: { DB: D1Database; VECTORIZE: VectorizeIndex; FILES_KV: KVNamespace }, client: Client): Promise<void> {
   const ids = await chunkIds(env.DB, "client_id = ?", client.id);
+  // The file keys known to D1 first: KV list() can miss files written in the last minute.
+  const docs = await all<{ r2_key: string | null; text_r2_key: string | null }>(env.DB, "SELECT r2_key, text_r2_key FROM documents WHERE client_id = ?", client.id);
   await run(env.DB, "DELETE FROM clients WHERE id = ?", client.id);
   await deleteVectors(env.VECTORIZE, ids);
-  await deletePrefix(env.FILES, clientPrefix(client.client_id));
+  const keys = docs.flatMap((d) => [d.r2_key, d.text_r2_key]).filter((k): k is string => Boolean(k));
+  await deleteFiles(env.FILES_KV, [...keys, ...allLogoKeys(client)]);
+  await deletePrefix(env.FILES_KV, clientPrefix(client.client_id));
 }
 
 function testChatPayload(result: ChatResponse, threshold: unknown): Record<string, any> {
@@ -233,9 +238,9 @@ export function registerClients(app: Hono<AppEnv>): void {
     const kind = LOGO_TYPES.find(([magic]) => magic.every((b, i) => data[i] === b))?.[1];
     const isWebp = data.length >= 12 && String.fromCharCode(...data.slice(8, 12)) === "WEBP";
     if (!kind || (kind[0] === "webp" && !isWebp)) throw new HttpError(400, "Upload a PNG, JPG, GIF or WebP image.");
-    await deletePrefix(c.env.FILES, `clients/${client.client_id}/branding/logo.`);
     const filename = `logo.${kind[0]}`;
-    await c.env.FILES.put(logoKey(client, filename), data, { httpMetadata: { contentType: kind[1] } });
+    await deleteFiles(c.env.FILES_KV, allLogoKeys(client).filter((k) => k !== logoKey(client, filename)));
+    await putFile(c.env.FILES_KV, logoKey(client, filename), data, { contentType: kind[1] });
     const brandingValue = { ...(client.branding || {}), logo_file: filename, logo_version: Math.floor(Date.now() / 1000) };
     await run(c.env.DB, "UPDATE clients SET branding = ? WHERE id = ?", toJson(brandingValue), client.id);
     return json({ client: await clientDetail(c, client, user) });
@@ -243,7 +248,7 @@ export function registerClients(app: Hono<AppEnv>): void {
 
   app.delete(`${base}/:client_id/logo`, async (c) => {
     const { client, user } = await forClient(c);
-    await deletePrefix(c.env.FILES, `clients/${client.client_id}/branding/logo.`);
+    await deleteFiles(c.env.FILES_KV, allLogoKeys(client));
     await run(c.env.DB, "UPDATE clients SET branding = ? WHERE id = ?", toJson({ ...(client.branding || {}), logo_file: null }), client.id);
     return json({ client: await clientDetail(c, client, user) });
   });

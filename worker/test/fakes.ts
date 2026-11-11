@@ -64,11 +64,11 @@ export class FakeVectorize {
   }
 }
 
-/** A test Env: real local D1 and R2, fake Vectorize and AI. */
+/** A test Env: real local D1 and KV, fake Vectorize and AI. */
 export function testEnv(overrides: Partial<Env> = {}): Env & { AI: FakeAI; VECTORIZE: FakeVectorize } {
   return {
     DB: env.DB,
-    FILES: env.FILES,
+    FILES_KV: env.FILES_KV,
     SECRET_KEY: env.SECRET_KEY,
     AI: new FakeAI() as any,
     VECTORIZE: new FakeVectorize() as any,
@@ -99,6 +99,6 @@ export function routeFetch(route: Route): { seen: string[]; restore: () => void 
 export async function resetDb(): Promise<void> {
   const tables = ["crawl_frontier", "action_calls", "action_sessions", "questions", "chunks", "pages", "documents", "client_actions", "jobs", "user_clients", "users", "clients", "ai_models", "settings", "rate_limits"];
   await env.DB.batch(tables.map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
-  const listing = await env.FILES.list({ limit: 1000 });
-  if (listing.objects.length) await env.FILES.delete(listing.objects.map((o) => o.key));
+  const listing = await env.FILES_KV.list({ limit: 1000 });
+  for (const k of listing.keys) await env.FILES_KV.delete(k.name);
 }

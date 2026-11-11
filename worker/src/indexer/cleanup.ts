@@ -1,6 +1,6 @@
 /**
- * Keep Vectorize and R2 in step with D1: rows deleted in D1 (directly or by ON DELETE CASCADE)
- * take their vectors and files with them. Collect the chunk ids first, delete the rows, then
+ * Keep Vectorize in step with D1: rows deleted in D1 (directly or by ON DELETE CASCADE)
+ * take their vectors with them. Collect the chunk ids first, delete the rows, then
  * delete the vectors (a vector without a row is ignored by search in the meantime).
  */
 
@@ -21,21 +21,4 @@ export async function deleteVectors(vectorize: VectorizeIndex, ids: number[]): P
       console.warn("Could not delete vectors", exc);
     }
   }
-}
-
-/** Delete every R2 object under ``prefix``. */
-export async function deletePrefix(bucket: R2Bucket, prefix: string): Promise<number> {
-  let removed = 0;
-  let cursor: string | undefined;
-  for (let page = 0; page < 50; page++) {
-    const listing = await bucket.list({ prefix, cursor, limit: 1000 });
-    const keys = listing.objects.map((o) => o.key);
-    if (keys.length) {
-      await bucket.delete(keys);
-      removed += keys.length;
-    }
-    if (!listing.truncated) break;
-    cursor = listing.cursor;
-  }
-  return removed;
 }

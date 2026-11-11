@@ -3,7 +3,7 @@
  *
  * The response keeps the fields of the self-hosted System page, filled with their Cloudflare
  * equivalents: the database is D1, the "pgvector" entry describes the Vectorize index, and the
- * disk entries show R2 and Vectorize use against the free plan's allowances.
+ * disk entries show Workers KV and Vectorize use against the free plan's allowances.
  */
 
 import type { Hono } from "hono";
@@ -11,10 +11,11 @@ import { VERSION } from "../../env";
 import { getModel, listModels, modelToDict, recordTest, rowConfig, runTest } from "../../services/ai_models";
 import { healthSummary } from "../../services/health";
 import { getSettingsMap } from "../../services/settings";
+import { storedBytes } from "../../storage/files";
 import { HttpError, json } from "../../util/http";
 import { requireSetupCompleted, requireSuperAdmin, type AppEnv, type C } from "../context";
 
-const R2_FREE_BYTES = 10 * 1024 ** 3; // 10 GB-month of storage
+const KV_FREE_BYTES = 1024 ** 3; // Workers KV free plan: 1 GB stored
 const VECTORIZE_FREE_DIMENSIONS = 5_000_000; // stored vector dimensions
 const VECTOR_DIM = 1024;
 const BACKUP_TABLES = ["settings", "users", "user_clients", "ai_models", "clients", "client_actions", "action_calls", "action_sessions", "pages", "documents", "chunks", "questions", "jobs", "crawl_frontier", "rate_limits"];
@@ -22,18 +23,6 @@ const BACKUP_TABLES = ["settings", "users", "user_clients", "ai_models", "client
 async function guard(c: C): Promise<void> {
   await requireSetupCompleted(c);
   await requireSuperAdmin(c);
-}
-
-async function r2Usage(bucket: R2Bucket): Promise<number> {
-  let used = 0;
-  let cursor: string | undefined;
-  for (let page = 0; page < 10; page++) {
-    const listing = await bucket.list({ cursor, limit: 1000 });
-    for (const o of listing.objects) used += o.size;
-    if (!listing.truncated) break;
-    cursor = listing.cursor;
-  }
-  return used;
 }
 
 export function registerSystem(app: Hono<AppEnv>): void {
@@ -62,9 +51,9 @@ export function registerSystem(app: Hono<AppEnv>): void {
     const values = await getSettingsMap(db, ["default_model_id", "fallback_model_id", "embedding", "mode"]);
     const models = [];
     for (const m of await listModels(db)) models.push(await modelToDict(env.SECRET_KEY, m, values.default_model_id, values.fallback_model_id));
-    let r2Used = 0;
+    let filesUsed = 0;
     try {
-      r2Used = await r2Usage(env.FILES);
+      filesUsed = await storedBytes(env.FILES_KV);
     } catch {
       /* listing failed: show 0 */
     }
@@ -79,7 +68,7 @@ export function registerSystem(app: Hono<AppEnv>): void {
       embedding: { model: embedding.model ?? null, dim: embedding.dim ?? null, status: embedding.status ?? null, error: embedding.error ?? null },
       models,
       disk: [
-        { path: "R2 files (uploads, logos, document text) · free plan 10 GB", total: R2_FREE_BYTES, used: r2Used, free: Math.max(0, R2_FREE_BYTES - r2Used) },
+        { path: "Workers KV files (uploads, logos, document text) · free plan 1 GB", total: KV_FREE_BYTES, used: filesUsed, free: Math.max(0, KV_FREE_BYTES - filesUsed) },
         {
           path: `Vectorize vectors · free plan ${VECTORIZE_FREE_DIMENSIONS.toLocaleString("en-US")} stored dimensions ≈ ${Math.floor(VECTORIZE_FREE_DIMENSIONS / VECTOR_DIM).toLocaleString("en-US")} chunks`,
           total: vectorTotal,
@@ -103,7 +92,7 @@ export function registerSystem(app: Hono<AppEnv>): void {
   /**
    * A JSON export of every table (instead of a pg_dump file), streamed a page of rows at a time.
    * API keys stay encrypted: they can only be decrypted with the same SECRET_KEY.
-   * Uploaded files and logos live in R2 and are not part of the export.
+   * Uploaded files and logos live in Workers KV and are not part of the export.
    */
   app.get("/api/admin/system/backup", async (c) => {
     await guard(c);

@@ -1,7 +1,8 @@
-// Documents (tests/test_documents.py): uploads to R2, parsing, hash-based skipping, deletion,
-// disabled documents, scanned PDFs, text kept for re-indexing.
+// Documents (tests/test_documents.py): uploads to Workers KV, parsing, hash-based skipping, deletion,
+// disabled documents, scanned PDFs, text kept for re-indexing, the 25 MB limit, and waiting while KV
+// still returns an older copy of a file (eventual consistency).
 import { beforeEach, describe, expect, it } from "vitest";
-import { cleanMarkdown, deleteDocument, DocumentError, safeFilename, saveUpload } from "../src/documents/service";
+import { cleanMarkdown, deleteDocument, DocumentError, MAX_UPLOAD_BYTES, safeFilename, saveUpload, TOO_LARGE_MESSAGE } from "../src/documents/service";
 import { toDocument } from "../src/models";
 import { search } from "../src/search/hybrid";
 import { createClient } from "../src/services/clients";
@@ -18,6 +19,18 @@ async function sync(env: ReturnType<typeof testEnv>, clientId: number, payload: 
   const job = await jobService.enqueue(env.DB, "index_docs", clientId, payload);
   for (let i = 0; i < 200 && ["queued", "running"].includes((await jobService.getJob(env.DB, job.id))!.status); i++) await runJobs(env, 1);
   return (await jobService.getJob(env.DB, job.id))!;
+}
+
+/** Run a job to the end, letting time pass whenever it waits (KV retries set _not_before). */
+async function syncWaiting(env: ReturnType<typeof testEnv>, jobId: number, onWait: (waits: number) => Promise<void> = async () => {}) {
+  let waits = 0;
+  for (let i = 0; i < 400 && ["queued", "running"].includes((await jobService.getJob(env.DB, jobId))!.status); i++) {
+    if (await runJobs(env, 1)) continue;
+    waits++;
+    await onWait(waits);
+    await run(env.DB, "UPDATE jobs SET lock_until = NULL, payload = json_remove(payload, '$._not_before') WHERE id = ?", jobId);
+  }
+  return { job: (await jobService.getJob(env.DB, jobId))!, waits };
 }
 
 function file(name: string, body: string | Uint8Array, type = "application/octet-stream"): File {
@@ -54,12 +67,84 @@ describe("documents", () => {
     expect((await sync(env, client.id)).result!.indexed).toBe(1);
     expect((await first<{ content: string }>(env.DB, "SELECT content FROM chunks WHERE client_id = ?", client.id))!.content).toContain("free on Sundays");
 
-    // A file removed from storage: its row and chunks go at the next sync.
-    await env.FILES.delete(`clients/acme/documents/parking.pdf`);
+    // Deleting the document (the only way files leave storage) removes its file, chunks and vectors.
+    await deleteDocument(env, toDocument((await first(env.DB, "SELECT * FROM documents WHERE id = ?", doc.id))!), client);
+    expect(await env.FILES_KV.get("clients/acme/documents/parking.pdf")).toBeNull();
     job = await sync(env, client.id);
-    expect(job.result!.removed).toBe(1);
+    expect(job.status).toBe("succeeded");
     expect(await first(env.DB, "SELECT id FROM chunks WHERE client_id = ?", client.id)).toBeNull();
     expect(env.VECTORIZE.vectors.size).toBe(0);
+  });
+
+  it("stores uploads in KV under the same key, with type, size and SHA-256", async () => {
+    const env = testEnv();
+    const client = await createClient(env.DB, "acme", "Acme", "");
+    await saveUpload(env, client, "menu.txt", file("menu.txt", "Dosa 80 rupees.", "text/plain"));
+    const { value, metadata } = await env.FILES_KV.getWithMetadata<Record<string, any>>("clients/acme/documents/menu.txt", "text");
+    expect(value).toBe("Dosa 80 rupees.");
+    expect(metadata).toMatchObject({ contentType: "text/plain", size: 15 });
+    expect(metadata!.sha256).toMatch(/^[0-9a-f]{64}$/);
+    const row = (await first<{ r2_key: string; upload_hash: string }>(env.DB, "SELECT r2_key, upload_hash FROM documents"))!;
+    expect(row).toEqual({ r2_key: "clients/acme/documents/menu.txt", upload_hash: metadata!.sha256 });
+  });
+
+  it("rejects files over 25 MB with a clear message", async () => {
+    const env = testEnv();
+    const client = await createClient(env.DB, "acme", "Acme", "");
+    expect(MAX_UPLOAD_BYTES).toBe(25 * 1024 * 1024);
+    expect(TOO_LARGE_MESSAGE).toContain("25 MB");
+    const big = file("big.pdf", new Uint8Array(MAX_UPLOAD_BYTES + 1), "application/pdf");
+    await expect(saveUpload(env, client, "big.pdf", big)).rejects.toThrow(TOO_LARGE_MESSAGE);
+    expect(await first(env.DB, "SELECT id FROM documents")).toBeNull();
+    expect((await env.FILES_KV.list()).keys).toHaveLength(0);
+    // Exactly 25 MB is accepted.
+    const max = file("max.txt", new Uint8Array(MAX_UPLOAD_BYTES).fill(97), "text/plain");
+    await saveUpload(env, client, "max.txt", max);
+    expect((await env.FILES_KV.getWithMetadata<{ size: number }>("clients/acme/documents/max.txt")).metadata!.size).toBe(MAX_UPLOAD_BYTES);
+  });
+
+  it("rejects file names too long for a KV key", async () => {
+    const env = testEnv();
+    const client = await createClient(env.DB, "acme", "Acme", "");
+    const name = "മ".repeat(190) + ".txt"; // 3 bytes per letter: over KV's 512-byte key limit
+    await expect(saveUpload(env, client, name, file(name, "x"))).rejects.toThrow("File name is too long");
+  });
+
+  it("waits while KV still returns an older copy, then indexes the new one", async () => {
+    const env = testEnv();
+    const client = await createClient(env.DB, "acme", "Acme", "");
+    const key = "clients/acme/documents/menu.txt";
+    await saveUpload(env, client, "menu.txt", file("menu.txt", "Dosa costs 80 rupees."));
+    await sync(env, client.id);
+    const old = await env.FILES_KV.getWithMetadata(key, "arrayBuffer");
+    await saveUpload(env, client, "menu.txt", file("menu.txt", "Dosa costs 95 rupees now."));
+    const fresh = await env.FILES_KV.getWithMetadata(key, "arrayBuffer");
+    // Another location still serves the old file for a while.
+    await env.FILES_KV.put(key, old.value!, { metadata: old.metadata });
+    const queued = await jobService.enqueue(env.DB, "index_docs", client.id, { sources: ["upload"] });
+    const { job, waits } = await syncWaiting(env, queued.id, async (n) => {
+      if (n === 2) await env.FILES_KV.put(key, fresh.value!, { metadata: fresh.metadata }); // the new copy arrives
+    });
+    expect(waits).toBe(2);
+    expect(job.status).toBe("succeeded");
+    expect(job.result!.indexed).toBe(1);
+    expect(job.result!.removed).toBe(0);
+    expect((await first<{ content: string }>(env.DB, "SELECT content FROM chunks WHERE client_id = ?", client.id))!.content).toContain("95 rupees");
+  });
+
+  it("a file missing from KV is marked as an error after waiting, not removed", async () => {
+    const env = testEnv();
+    const client = await createClient(env.DB, "acme", "Acme", "");
+    const { doc } = await saveUpload(env, client, "menu.txt", file("menu.txt", "Dosa 80 rupees."));
+    await env.FILES_KV.delete("clients/acme/documents/menu.txt");
+    const queued = await jobService.enqueue(env.DB, "index_docs", client.id, { sources: ["upload"] });
+    const { job, waits } = await syncWaiting(env, queued.id);
+    expect(waits).toBe(12);
+    expect(job.status).toBe("succeeded");
+    expect(job.result!.errors).toBe(1);
+    const row = toDocument((await first(env.DB, "SELECT * FROM documents WHERE id = ?", doc.id))!);
+    expect(row.status).toBe("error");
+    expect(row.error).toContain("missing");
   });
 
   it("delete removes the file, chunks and vectors", async () => {
@@ -69,7 +154,7 @@ describe("documents", () => {
     await sync(env, client.id);
     expect(env.VECTORIZE.vectors.size).toBeGreaterThan(0);
     await deleteDocument(env, toDocument((await first(env.DB, "SELECT * FROM documents WHERE id = ?", doc.id))!), client);
-    expect(await env.FILES.get("clients/acme/documents/menu.txt")).toBeNull();
+    expect(await env.FILES_KV.get("clients/acme/documents/menu.txt")).toBeNull();
     expect(await first(env.DB, "SELECT id FROM documents WHERE id = ?", doc.id)).toBeNull();
     expect(env.VECTORIZE.vectors.size).toBe(0);
   });
@@ -162,8 +247,9 @@ describe("documents", () => {
     expect(chunks).toBeGreaterThan(30);
     expect(env.VECTORIZE.vectors.size).toBe(chunks);
     expect(done.progress_text).toContain("embedded");
-    // Too large for a D1 row: the extracted text is kept in R2 instead.
+    // Too large for a D1 row: the extracted text is kept in KV instead.
     const row = (await first<{ text_r2_key: string | null; extracted_text: string | null }>(env.DB, "SELECT text_r2_key, extracted_text FROM documents"))!;
     expect(row.extracted_text ?? "").toBe(big.length > 900_000 ? "" : big);
+    if (row.text_r2_key) expect(await env.FILES_KV.get(row.text_r2_key)).toBe(big);
   });
 });

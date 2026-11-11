@@ -5,45 +5,64 @@
   "name": "website-assistant",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
-  "compatibility_flags": ["nodejs_compat"],
-
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   // The admin UI. API routes and /health run the Worker first; every other path is a static file,
   // with index.html for the UI's own routes (single-page application).
   "assets": {
     "directory": "../frontend/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/health"]
+    "run_worker_first": [
+      "/api/*",
+      "/health"
+    ]
   },
-
   // `wrangler d1 create website-assistant`, then paste its database_id here.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "website-assistant",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "database_id": "a1c208ac-5299-489d-b49f-323ecd19acbb",
       "migrations_dir": "migrations"
     }
   ],
-
   // `wrangler vectorize create chunks --dimensions=1024 --metric=cosine`
   // Vectorize has no local simulator: `wrangler dev` uses the real index ("remote": true).
-  "vectorize": [{ "binding": "VECTORIZE", "index_name": "chunks", "remote": true }],
-
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "chunks",
+      "remote": true
+    }
+  ],
   // Workers AI: embeddings (@cf/baai/bge-m3) and document conversion (toMarkdown).
-  "ai": { "binding": "AI", "remote": true },
-
-  // `wrangler r2 bucket create website-assistant-files`: uploaded documents and logos.
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "website-assistant-files" }],
-
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+  // Workers KV: uploaded documents (up to 25 MB each), logos and large extracted texts.
+  // `wrangler kv namespace create FILES_KV`, then paste its id here.
+  // (`wrangler dev` stores KV locally, so it works with this placeholder.)
+  "kv_namespaces": [
+    {
+      "binding": "FILES_KV",
+      "id": "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+    }
+  ],
   // The scheduler: re-crawl schedule, cleanups, heartbeats, and background job steps.
-  "triggers": { "crons": ["* * * * *"] },
-
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
   "vars": {
     // Optional: serve the admin API only on this host name (e.g. "admin.example.com"),
     // like the separate admin port of the self-hosted version. Empty = every host name.
     "ADMIN_HOSTNAME": ""
   },
-
-  "observability": { "enabled": true }
+  "observability": {
+    "enabled": true
+  }
 }

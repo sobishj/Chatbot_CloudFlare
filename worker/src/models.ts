@@ -145,9 +145,13 @@ export interface DocumentRow {
   enabled: boolean;
   uploaded_at: string;
   indexed_at: string | null;
+  /** KV key of the uploaded file (the column kept its R2-era name). */
   r2_key: string | null;
+  /** KV key of extracted text too large for the row. */
   text_r2_key: string | null;
   text_hash: string | null;
+  /** SHA-256 of the file as uploaded (checked against what KV returns). */
+  upload_hash: string | null;
 }
 
 export function toDocument(r: Row): DocumentRow {

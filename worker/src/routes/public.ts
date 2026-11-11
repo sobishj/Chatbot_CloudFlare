@@ -20,6 +20,7 @@ import { streamAnswer } from "../chat/stream";
 import * as rateLimit from "../services/rate_limit";
 import { branding, getBySlug, originAllowed, publicConfig } from "../services/clients";
 import { getSetting } from "../services/settings";
+import { getFile } from "../storage/files";
 import { clientIp, HttpError, json, readJson, validateBody } from "../util/http";
 import type { AppEnv } from "./context";
 import { allowedPreflightOrigin, corsHeaders, requestOrigin } from "./cors";
@@ -146,12 +147,17 @@ export function logoKey(client: Client, filename: string): string {
   return `clients/${client.client_id}/branding/${filename}`;
 }
 
+/** Every key a logo can have (one per image type), so it can be removed without listing KV. */
+export function allLogoKeys(client: Client): string[] {
+  return Object.keys(LOGO_MEDIA).map((ext) => logoKey(client, `logo.${ext}`));
+}
+
 export async function logoResponse(env: Env, client: Client): Promise<Response> {
   const filename = (client.branding || {}).logo_file;
-  const obj = filename ? await env.FILES.get(logoKey(client, filename)) : null;
+  const obj = filename ? await getFile(env.FILES_KV, logoKey(client, filename)) : null;
   if (!obj) throw new HttpError(404, "No logo.");
   const ext = String(filename).split(".").pop() || "";
-  return new Response(obj.body, {
+  return new Response(obj.data, {
     headers: {
       "Content-Type": LOGO_MEDIA[ext] ?? "application/octet-stream",
       "Cache-Control": "public, max-age=86400",

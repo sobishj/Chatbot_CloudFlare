@@ -3,7 +3,8 @@ export interface Env {
   DB: D1Database;
   VECTORIZE: VectorizeIndex;
   AI: Ai;
-  FILES: R2Bucket;
+  /** Workers KV: uploaded documents, logos and large extracted texts (see src/storage/files.ts). */
+  FILES_KV: KVNamespace;
   ASSETS: Fetcher;
   /** `wrangler secret put SECRET_KEY`: encrypts API keys and signs sessions (32+ characters). */
   SECRET_KEY: string;
