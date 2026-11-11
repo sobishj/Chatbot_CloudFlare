@@ -17,3 +17,8 @@ frontend/*.tsbuildinfo
 # Worker
 worker/node_modules/
 worker/.wrangler/
+
+# Local leftovers
+.wrangler/
+Chatbot_CloudFlare/
+worker/.secrets.production.json

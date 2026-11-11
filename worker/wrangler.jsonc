@@ -44,11 +44,11 @@
   },
   // Workers KV: uploaded documents (up to 25 MB each), logos and large extracted texts.
   // `wrangler kv namespace create FILES_KV`, then paste its id here.
-  // (`wrangler dev` stores KV locally, so it works with this placeholder.)
+  // (`wrangler dev` stores KV locally.)
   "kv_namespaces": [
     {
       "binding": "FILES_KV",
-      "id": "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+      "id": "79984df0cd344f77b33187158c228558"
     }
   ],
   // The scheduler: re-crawl schedule, cleanups, heartbeats, and background job steps.
