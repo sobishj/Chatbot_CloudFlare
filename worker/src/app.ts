@@ -22,6 +22,8 @@ import { registerSetup } from "./routes/admin/setup";
 import { registerModels } from "./routes/admin/models";
 import { registerSettings } from "./routes/admin/settings";
 import { registerUsers } from "./routes/admin/users";
+import { registerPublic } from "./routes/public";
+import { registerClients } from "./routes/admin/clients";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -90,7 +92,9 @@ app.use("*", async (c, next) => {
 });
 
 registerHealth(app);
+registerPublic(app);
 registerAuth(app);
+registerClients(app);
 registerSetup(app);
 registerModels(app);
 registerSettings(app);
