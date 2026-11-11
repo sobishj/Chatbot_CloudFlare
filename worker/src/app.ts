@@ -30,6 +30,9 @@ import { registerClientDocuments } from "./routes/admin/clients_documents";
 import "./worker/handlers";
 import "./actions/flow";
 import { registerActions } from "./routes/admin/actions";
+import { registerClientStats } from "./routes/admin/clients_stats";
+import { registerDashboard } from "./routes/admin/dashboard";
+import { registerSystem } from "./routes/admin/system";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -105,6 +108,9 @@ registerClientWebsite(app);
 registerJobs(app);
 registerClientDocuments(app);
 registerActions(app);
+registerClientStats(app);
+registerDashboard(app);
+registerSystem(app);
 registerSetup(app);
 registerModels(app);
 registerSettings(app);

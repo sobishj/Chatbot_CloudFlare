@@ -34,6 +34,11 @@ export async function allAllowedDomains(db: D1Database): Promise<string[]> {
   return [...originCache.domains];
 }
 
+/** Forget the cached domains (tests). */
+export function resetOriginCache(): void {
+  originCache = { at: 0, domains: [] };
+}
+
 export async function allowedPreflightOrigin(db: D1Database, origin: string): Promise<boolean> {
   return originAllowed(origin, await allAllowedDomains(db));
 }

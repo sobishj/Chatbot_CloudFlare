@@ -78,7 +78,7 @@ export function testEnv(overrides: Partial<Env> = {}): Env & { AI: FakeAI; VECTO
   } as any;
 }
 
-export type Route = (url: URL, init: RequestInit) => Response | Promise<Response> | undefined;
+export type Route = (url: URL, init: RequestInit) => Response | undefined | Promise<Response | undefined>;
 
 /** Replace global fetch with a router for the duration of a test. Returns the list of requested URLs. */
 export function routeFetch(route: Route): { seen: string[]; restore: () => void } {
