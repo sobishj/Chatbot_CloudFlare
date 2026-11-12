@@ -20,7 +20,25 @@ export const DEFAULT_BRANDING: Record<string, any> = {
   powered_by_text: "Powered by Website Assistant",
   powered_by_url: "",
   logo_file: null, // file name of the logo in KV (clients/<slug>/branding/)
+  // Chat window size in percent of the screen (20-100). Phones: 100 x 100 is full screen.
+  width_pct: 25,
+  height_pct: 70,
+  mobile_width_pct: 92,
+  mobile_height_pct: 80,
+  // IANA time zone for "what time is it / are you open now?" answers; "" = the global setting.
+  timezone: "",
 };
+
+const SIZE_KEYS = ["width_pct", "height_pct", "mobile_width_pct", "mobile_height_pct"];
+
+function isTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export const DEFAULT_CRAWL_SETTINGS: Record<string, any> = {
   max_pages: 500,
@@ -182,6 +200,13 @@ export function validateBranding(changes: Record<string, any>): Record<string, a
       if (value !== "left" && value !== "right") throw new ClientError("Position must be left or right.");
     } else if (key === "powered_by" || key === "widget_enabled") {
       value = Boolean(value);
+    } else if (SIZE_KEYS.includes(key)) {
+      const n = Math.round(Number(value));
+      if (!Number.isFinite(n) || n < 20 || n > 100) throw new ClientError("Chat window sizes must be between 20% and 100%.");
+      value = n;
+    } else if (key === "timezone") {
+      value = String(value ?? "").trim();
+      if (value && !isTimeZone(value)) throw new ClientError("Unknown time zone. Use a name like Asia/Kolkata or UTC.");
     } else if (key === "powered_by_url") {
       value = value ? normalizeUrl(String(value)) : "";
     } else {
@@ -291,6 +316,10 @@ export function publicConfig(client: Client, chatNotice: string, logoUrl: string
     greeting: b.greeting,
     default_language: b.default_language,
     position: b.position,
+    width_pct: b.width_pct,
+    height_pct: b.height_pct,
+    mobile_width_pct: b.mobile_width_pct,
+    mobile_height_pct: b.mobile_height_pct,
     logo_url: logoUrl,
     notice: chatNotice,
     powered_by: b.powered_by,

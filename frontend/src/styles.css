@@ -239,7 +239,8 @@ table.table { width: 100%; border-collapse: collapse; }
 .dropzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .dropzone strong { color: var(--text); }
 
-.preview-stage { position: relative; height: 640px; border: 1px solid var(--border); border-radius: var(--radius); background: repeating-linear-gradient(45deg, #fafbfc, #fafbfc 12px, #f4f5f7 12px, #f4f5f7 24px); overflow: hidden; }
+.preview-frame { position: relative; margin: 0 auto; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.preview-stage { position: absolute; top: 0; left: 0; transform-origin: 0 0; background: repeating-linear-gradient(45deg, #fafbfc, #fafbfc 12px, #f4f5f7 12px, #f4f5f7 24px); overflow: hidden; }
 .preview-stage .fake { position: absolute; inset: 16px 16px auto 16px; display: flex; flex-direction: column; gap: 8px; }
 .preview-stage .fake div { height: 12px; border-radius: 6px; background: #e8eaee; }
 .snippet { background: #111827; color: #e5e7eb; padding: 14px 16px; border-radius: var(--radius-sm); font: 13px/1.6 var(--mono); overflow-x: auto; white-space: pre; }

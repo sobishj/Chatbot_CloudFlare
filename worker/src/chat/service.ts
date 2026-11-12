@@ -65,9 +65,12 @@ export interface ChatDeps {
 
 export const defaultDeps: ChatDeps = { llm: (cfg, m) => complete(cfg, m), toolLlm: (cfg, m, t) => completeWithTools(cfg, m, t) };
 
-/** Current time in the configured time zone (Settings), for questions like "is it open now?". */
-export function localNow(timezone: string | null | undefined): ZonedTime {
-  return zonedNow(timezone || "UTC");
+/**
+ * Current time for questions like "is it open now?": the client's own time zone (Branding),
+ * else the global one (Settings), else UTC.
+ */
+export function localNow(clientTimezone: string | null | undefined, globalTimezone?: string | null): ZonedTime {
+  return zonedNow(clientTimezone || globalTimezone || "UTC");
 }
 
 /** Lower-case, strip punctuation and extra spaces: groups 'Where is ASICS?' with 'where is asics'. */
@@ -157,7 +160,7 @@ export class PreparedAnswer {
       keyInformation(db, this.client.id, docSettings.key_facts || ""),
       listQuestion ? pageDirectory(db, this.client.id) : Promise.resolve(""),
     ]);
-    const messages = buildMessages(this.settings.system_prompt, b.bot_name, this.client.name, result.hits, history, this.question, keyInfo, localNow(this.settings.timezone), directory);
+    const messages = buildMessages(this.settings.system_prompt, b.bot_name, this.client.name, result.hits, history, this.question, keyInfo, localNow(b.timezone, this.settings.timezone), directory);
     let chain = await resolveChain(db, this.env.SECRET_KEY, this.client);
     if (!chain.length) throw new LLMError("No AI model is configured. Add one in Settings → AI Models.");
     // Completeness needs the model's reasoning; other answers start faster without it.

@@ -74,6 +74,12 @@
     });
   }
 
+  // A size setting (percent of the screen), kept between 20 and 100.
+  function pct(v, fallback) {
+    var n = Math.round(Number(v));
+    return isFinite(n) && n > 0 ? Math.min(100, Math.max(20, n)) : fallback;
+  }
+
   function contrastText(hex) {
     var m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
     if (!m) return "#ffffff";
@@ -83,17 +89,27 @@
   }
 
   // ------------------------------------------------------------------ styles
+  // Phone layout, written once for real phones (vw/vh) and for the admin preview (% of the box).
+  // The dvh copy is dropped by browsers that don't know dvh; it keeps the window above the keyboard.
+  function phoneRules(sel, position, w, h) {
+    return sel + " .panel{position:" + position + ";left:0;right:0;margin:0 auto;bottom:12px;" +
+      "width:calc(var(--wa-mw,92) * " + w + ");min-width:0;max-width:calc(100 * " + w + ");" +
+      "height:calc(var(--wa-mh,80) * " + h + ");min-height:min(320px,calc(100 * " + h + " - 24px));max-height:calc(100 * " + h + " - 24px);border-radius:16px}" +
+      sel + " .panel.full{inset:0;margin:0;width:auto;height:auto;min-height:0;max-height:none;border:0;border-radius:0}";
+  }
+
   var CSS = [
     ":host{all:initial}",
     "*,*::before,*::after{box-sizing:border-box}",
     ".wa{--wa-primary:#1f5f5b;--wa-on-primary:#fff;position:fixed;bottom:20px;z-index:2147483000;font:15px/1.45 system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans','Noto Sans Malayalam',sans-serif;color:#1f2933}",
     ".wa.right{right:20px}.wa.left{left:20px}",
-    ".wa.embedded{position:absolute}",
     ".bubble{width:58px;height:58px;border-radius:50%;border:0;cursor:pointer;background:var(--wa-primary);color:var(--wa-on-primary);box-shadow:0 6px 20px rgba(15,23,42,.25);display:grid;place-items:center;transition:transform .15s ease}",
     ".bubble:hover{transform:scale(1.05)}",
     ".bubble:focus-visible,.icon-btn:focus-visible,.send:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid #2563eb;outline-offset:2px}",
     ".bubble svg{width:28px;height:28px}",
-    ".panel{position:absolute;bottom:74px;width:370px;max-width:calc(100vw - 32px);height:560px;max-height:calc(100vh - 110px);background:#fff;border-radius:16px;box-shadow:0 18px 50px rgba(15,23,42,.28);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(15,23,42,.08)}",
+    // Size: --wa-w/--wa-h (desktop) and --wa-mw/--wa-mh (phones) are percentages of the screen,
+    // set from the branding settings. Minimums keep the chat usable on small screens.
+    ".panel{position:absolute;bottom:74px;width:calc(var(--wa-w,25) * 1vw);min-width:min(300px,calc(100vw - 40px));max-width:calc(100vw - 40px);height:calc(var(--wa-h,70) * 1vh);min-height:min(360px,calc(100vh - 110px));max-height:calc(100vh - 110px);background:#fff;border-radius:16px;box-shadow:0 18px 50px rgba(15,23,42,.28);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(15,23,42,.08)}",
     ".wa.right .panel{right:0}.wa.left .panel{left:0}",
     ".panel[hidden]{display:none}",
     ".head{background:var(--wa-primary);color:var(--wa-on-primary);padding:14px 14px 14px 16px;display:flex;align-items:center;gap:10px}",
@@ -129,7 +145,16 @@
     ".powered{font-size:11.5px;color:#9aa5b1;text-align:center;margin-top:2px}",
     ".powered a{color:inherit}",
     ".sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}",
-    "@media (max-width:480px){.wa:not(.embedded) .panel{position:fixed;inset:0;width:100vw;max-width:none;height:100%;max-height:none;border-radius:0}.wa{bottom:16px}.wa.right{right:16px}.wa.left{left:16px}}",
+    // Admin live preview: the widget fills a (scaled) stand-in screen, so sizes are % of that box.
+    ".wa.embedded{position:absolute;inset:0;pointer-events:none}",
+    ".wa.embedded .bubble,.wa.embedded .panel{pointer-events:auto}",
+    ".wa.embedded .bubble{position:absolute;bottom:20px}.wa.embedded.right .bubble{right:20px}.wa.embedded.left .bubble{left:20px}",
+    ".wa.embedded .panel{bottom:94px;width:calc(var(--wa-w,25) * 1%);min-width:min(300px,calc(100% - 40px));max-width:calc(100% - 40px);height:calc(var(--wa-h,70) * 1%);min-height:min(360px,calc(100% - 114px));max-height:calc(100% - 114px)}",
+    ".wa.embedded.right .panel{right:20px}.wa.embedded.left .panel{left:20px}",
+    // Phones: the chat window is centred near the bottom of the screen; 100% x 100% is full screen.
+    "@media (max-width:480px){.wa{bottom:16px}.wa.right{right:16px}.wa.left{left:16px}" +
+      phoneRules(".wa:not(.embedded)", "fixed", "1vw", "1vh") + phoneRules(".wa:not(.embedded)", "fixed", "1vw", "1dvh") + "}",
+    phoneRules(".wa.embedded.mobile", "absolute", "1%", "1%"),
     "@media (prefers-reduced-motion:reduce){.bubble,.typing i{transition:none;animation:none}}"
   ].join("");
 
@@ -168,6 +193,7 @@
       '<div class="notice"></div><div class="powered"></div></div></div>' +
       '<button class="bubble" type="button" aria-expanded="false">' + ICON_CHAT + "</button></div>";
 
+    var device = options.device === "mobile" ? "mobile" : "desktop"; // preview only
     var wrap = root.querySelector(".wa");
     var panel = root.querySelector(".panel");
     var head = root.querySelector(".head");
@@ -181,8 +207,14 @@
     function applyConfig(cfg) {
       config = cfg;
       t = STRINGS[(cfg.default_language || "en").slice(0, 2)] || STRINGS.en;
-      wrap.className = "wa " + (cfg.position === "left" ? "left" : "right") + (options.container ? " embedded" : "");
+      wrap.className = "wa " + (cfg.position === "left" ? "left" : "right") + (options.container ? " embedded" : "") + (options.container && device === "mobile" ? " mobile" : "");
       wrap.style.setProperty("--wa-primary", cfg.primary_color || "#1f5f5b");
+      var mw = pct(cfg.mobile_width_pct, 92), mh = pct(cfg.mobile_height_pct, 80);
+      wrap.style.setProperty("--wa-w", String(pct(cfg.width_pct, 25)));
+      wrap.style.setProperty("--wa-h", String(pct(cfg.height_pct, 70)));
+      wrap.style.setProperty("--wa-mw", String(mw));
+      wrap.style.setProperty("--wa-mh", String(mh));
+      panel.classList.toggle("full", mw >= 100 && mh >= 100);
       wrap.style.setProperty("--wa-on-primary", contrastText(cfg.primary_color));
       head.innerHTML = "";
       if (cfg.logo_url) {
@@ -269,11 +301,18 @@
       log.scrollTop = log.scrollHeight;
     }
 
+    // On phones the open chat covers the bubble, so it is hidden (the header has a close button).
+    function isPhone() {
+      if (options.container) return device === "mobile";
+      return !!(window.matchMedia && window.matchMedia("(max-width:480px)").matches);
+    }
+    function syncBubble() { bubble.style.display = state.open && isPhone() ? "none" : ""; }
+
     function setOpen(open) {
       state.open = open;
       panel.hidden = !open;
       bubble.setAttribute("aria-expanded", String(open));
-      bubble.style.display = open && window.matchMedia && window.matchMedia("(max-width:480px)").matches && !options.container ? "none" : "";
+      syncBubble();
       if (open) { render(); setTimeout(function () { input.focus(); }, 30); }
       save();
     }
@@ -374,6 +413,7 @@
     input.addEventListener("keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value); }
     });
+    window.addEventListener("resize", syncBubble); // rotation, or a desktop window made narrow
     root.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && !panel.hidden) { setOpen(false); bubble.focus(); }
     });
@@ -383,8 +423,9 @@
 
     return {
       update: function (cfg) { applyConfig(cfg); },
+      setDevice: function (d) { device = d === "mobile" ? "mobile" : "desktop"; applyConfig(config); syncBubble(); },
       open: function () { setOpen(true); },
-      destroy: function () { host.remove(); }
+      destroy: function () { window.removeEventListener("resize", syncBubble); host.remove(); }
     };
   }
 

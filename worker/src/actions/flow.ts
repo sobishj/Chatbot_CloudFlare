@@ -214,7 +214,7 @@ export async function answerWithActions(
     const docSettings = documentSettings(client);
     const messages = buildMessages(
       settings.system_prompt, b.bot_name, client.name, hits, history, question,
-      await keyInformation(db, client.id, docSettings.key_facts || ""), localNow(settings.timezone),
+      await keyInformation(db, client.id, docSettings.key_facts || ""), localNow(b.timezone, settings.timezone),
       isListQuestion(question) ? await pageDirectory(db, client.id) : "",
     );
     const plainMessages = messages.map((m) => ({ ...m }));
