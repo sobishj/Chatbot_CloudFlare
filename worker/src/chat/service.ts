@@ -17,6 +17,7 @@ import { zonedNow, type ZonedTime } from "../util/time";
 import { keyInformation, pageDirectory } from "./essentials";
 import { detectLanguage } from "./language";
 import { maskPii } from "./pii";
+import { withContact } from "./contact";
 import { buildMessages, parseAnswer } from "./prompt";
 
 export const MAX_MESSAGE_CHARS = 1000;
@@ -160,7 +161,7 @@ export class PreparedAnswer {
       keyInformation(db, this.client.id, docSettings.key_facts || ""),
       listQuestion ? pageDirectory(db, this.client.id) : Promise.resolve(""),
     ]);
-    const messages = buildMessages(this.settings.system_prompt, b.bot_name, this.client.name, result.hits, history, this.question, keyInfo, localNow(b.timezone, this.settings.timezone), directory);
+    const messages = buildMessages(this.settings.system_prompt, b.bot_name, this.client.name, result.hits, history, this.question, keyInfo, localNow(b.timezone, this.settings.timezone), directory, b.contact_details || "");
     let chain = await resolveChain(db, this.env.SECRET_KEY, this.client);
     if (!chain.length) throw new LLMError("No AI model is configured. Add one in Settings → AI Models.");
     // Completeness needs the model's reasoning; other answers start faster without it.
@@ -172,6 +173,8 @@ export class PreparedAnswer {
     const response = this.response;
     const [answer, flaggedNoAnswer] = parseAnswer(llmResult.text);
     response.answer = answer || UNAVAILABLE_ANSWER;
+    // The model couldn't answer: make sure the visitor gets the contact details.
+    if (!answer || flaggedNoAnswer) response.answer = withContact(response.answer, branding(this.client).contact_details, this.language || "en");
     response.answered = Boolean(answer) && !flaggedNoAnswer && response.hits.length > 0 && response.confidence >= Number(this.settings.confidence_threshold);
     response.sources = response.answered ? sourcesFromHits(response.hits) : [];
     response.model_name = llmResult.model_name;
@@ -184,7 +187,7 @@ export class PreparedAnswer {
 
   fail(exc: Error): void {
     console.warn(`Chat failed for client ${this.client.client_id}: ${exc.message}`);
-    this.response.answer = UNAVAILABLE_ANSWER;
+    this.response.answer = withContact(UNAVAILABLE_ANSWER, branding(this.client).contact_details, this.language || "en");
     this.response.error = exc.message.slice(0, 1000);
     this.modelId = null;
   }

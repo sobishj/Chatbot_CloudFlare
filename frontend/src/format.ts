@@ -3,7 +3,7 @@
 export function dateTime(value: string | null | undefined): string {
   if (!value) return "—";
   const d = new Date(value);
-  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
 }
 
 export function relative(value: string | null | undefined): string {

@@ -160,6 +160,9 @@ export function BrandingTab({ client, reload }: TabProps) {
               {zones.map((z) => <option key={z} value={z}>{z.replace(/_/g, " ")}</option>)}
             </select>
           </Field>
+          <Field label="Contact details" htmlFor="b-contact" full hint="Given to visitors when the assistant can't answer their question. Leave empty to use contact details found on the website.">
+            <textarea id="b-contact" className="textarea" rows={3} maxLength={500} value={b.contact_details} onChange={(e) => set("contact_details", e.target.value)} placeholder={"Phone: +91 98765 43210\nEmail: info@example.com\nWhatsApp: +91 98765 43210"} />
+          </Field>
           <div className="field full">
             <span className="label">Logo</span>
             <div className="row">

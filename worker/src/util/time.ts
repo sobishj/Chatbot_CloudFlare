@@ -101,9 +101,14 @@ export function formatLongDate(z: { year: number; month: number; day: number; we
   return `${DAY_NAMES[z.weekday]}, ${pad(z.day)} ${MONTH_NAMES[z.month - 1]} ${z.year}`;
 }
 
-/** strftime("%A, %d %B %Y, %H:%M"). */
+/** "Saturday, 10 October 2026, 2:05 PM" (12-hour clock). */
 export function formatLongDateTime(z: ZonedTime): string {
-  return `${formatLongDate(z)}, ${pad(z.hour)}:${pad(z.minute)}`;
+  return `${formatLongDate(z)}, ${formatTime12(z.hour, z.minute)}`;
+}
+
+/** 12-hour clock: 0:05 -> "12:05 AM", 14:05 -> "2:05 PM". */
+export function formatTime12(hour: number, minute: number): string {
+  return `${hour % 12 || 12}:${pad(minute)} ${hour < 12 ? "AM" : "PM"}`;
 }
 
 /** Today's UTC date, for prompts that used the server's local date (UTC on servers). */

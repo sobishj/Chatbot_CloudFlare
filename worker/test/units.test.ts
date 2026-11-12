@@ -14,7 +14,7 @@ import { decryptSecret, encryptSecret, maskSecret } from "../src/security/crypto
 import { hashPassword, passwordProblem, verifyPassword } from "../src/security/passwords";
 import { ClientError, normalizeDomain, normalizeDomains, originAllowed, validateSlug } from "../src/services/clients";
 import { isPrivateHost, urlTargetsPrivateNetwork } from "../src/util/netguard";
-import { zonedNow } from "../src/util/time";
+import { formatTime12, zonedNow } from "../src/util/time";
 import { crawlDue } from "../src/worker/scheduler";
 
 const SECRET = "unit-test-secret-key-0123456789abcdef";
@@ -154,7 +154,11 @@ describe("prompt", () => {
     expect(system.indexOf("[0] Key information about Lulu Mall")).toBeLessThan(system.indexOf("[1] Pizza Hut"));
     expect(system).toContain("SUBJECT RULE");
     expect(system).toContain("Lulu Mall's own opening hours");
-    expect(system).toContain("Current local time: Saturday, 10 October 2026, 14:05 (IST)");
+    expect(system).toContain("Current local time: Saturday, 10 October 2026, 2:05 PM (IST)");
+    expect(system).toContain("12-hour format");
+    expect(formatTime12(0, 5)).toBe("12:05 AM");
+    expect(formatTime12(12, 0)).toBe("12:00 PM");
+    expect(formatTime12(23, 59)).toBe("11:59 PM");
     expect(buildMessages("{context}", "Bot", "Acme", [], [], "hi", "Open 9-5", noon)[0].content).toContain("Key information");
     expect(buildMessages("{context}", "Bot", "Acme", shop, [], "hi", "", noon)[0].content).not.toContain("Key information");
   });

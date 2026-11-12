@@ -27,6 +27,8 @@ export const DEFAULT_BRANDING: Record<string, any> = {
   mobile_height_pct: 80,
   // IANA time zone for "what time is it / are you open now?" answers; "" = the global setting.
   timezone: "",
+  // Phone, email, WhatsApp … given to visitors when the assistant can't answer.
+  contact_details: "",
 };
 
 const SIZE_KEYS = ["width_pct", "height_pct", "mobile_width_pct", "mobile_height_pct"];

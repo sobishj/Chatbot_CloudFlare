@@ -14,6 +14,7 @@ import { toAction, type Client, type ClientAction } from "../models";
 import { keyInformation, pageDirectory } from "../chat/essentials";
 import { detectLanguage } from "../chat/language";
 import { tokenizePii } from "../chat/pii";
+import { withContact } from "../chat/contact";
 import { buildMessages, parseAnswer } from "../chat/prompt";
 import {
   actionsHook,
@@ -216,6 +217,7 @@ export async function answerWithActions(
       settings.system_prompt, b.bot_name, client.name, hits, history, question,
       await keyInformation(db, client.id, docSettings.key_facts || ""), localNow(b.timezone, settings.timezone),
       isListQuestion(question) ? await pageDirectory(db, client.id) : "",
+      b.contact_details || "",
     );
     const plainMessages = messages.map((m) => ({ ...m }));
     messages[0].content += "\n\n" + ACTIONS_PROMPT.split("{client_name}").join(client.name).split("{today}").join(formatLongDate(utcToday()));
@@ -238,11 +240,12 @@ export async function answerWithActions(
     const fromContent = hits.length > 0 && confidence >= Number(settings.confidence_threshold);
     const fromActions = run.results.some((r) => r.ok);
     const answered = Boolean(answer) && !flagged && (fromContent || fromActions);
-    return finish(answer || UNAVAILABLE_ANSWER, answered, answered && fromContent ? sourcesFromHits(hits) : []);
+    const reply = !answer || flagged ? withContact(answer || UNAVAILABLE_ANSWER, b.contact_details, language) : answer;
+    return finish(reply, answered, answered && fromContent ? sourcesFromHits(hits) : []);
   } catch (exc) {
     if (!isAnswerFailure(exc)) throw exc;
     console.warn(`Chat failed for client ${client.client_id}: ${exc.message}`);
-    return finish(UNAVAILABLE_ANSWER, false, [], exc.message.slice(0, 1000));
+    return finish(withContact(UNAVAILABLE_ANSWER, b.contact_details, language), false, [], exc.message.slice(0, 1000));
   }
 }
 

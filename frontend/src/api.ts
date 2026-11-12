@@ -148,6 +148,7 @@ export interface Branding {
   mobile_width_pct: number;
   mobile_height_pct: number;
   timezone: string;
+  contact_details: string;
 }
 
 export interface Client {

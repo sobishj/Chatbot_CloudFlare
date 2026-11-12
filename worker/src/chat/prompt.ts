@@ -3,6 +3,7 @@
 import type { ChatMessage } from "../llm/client";
 import type { SearchHit } from "../search/hybrid";
 import { formatLongDate, formatLongDateTime, type ZonedTime } from "../util/time";
+import { contactRule } from "./contact";
 
 export const NO_ANSWER_TAG = "[[NO_ANSWER]]";
 const NO_ANSWER_RE_SRC = "\\[\\[\\s*NO[_ ]ANSWER\\s*\\]\\]";
@@ -92,13 +93,16 @@ export function buildMessages(
   keyFacts: string,
   now: ZonedTime,
   directory = "",
+  contact = "",
 ): ChatMessage[] {
   const context = formatContext(hits, keyFacts, clientName, directory);
   let system = renderSystemPrompt(template, botName, clientName, context, now);
   const rules = [SUBJECT_RULE, DETAILS_RULE, DOCUMENTS_RULE, ...(directory ? [LIST_RULE] : [])];
   system += "\n\n" + rules.map((r) => r.split("{client_name}").join(clientName)).join("\n\n");
+  system += "\n\n" + contactRule(contact);
   // Lets the assistant answer "is it open now?"
   system += `\n\nCurrent local time: ${formatLongDateTime(now)} (${now.tzName || "local"}).`;
+  system += "\nAlways write times in 12-hour format with AM/PM (for example 9:30 AM, 7 PM), never 24-hour.";
   const messages: ChatMessage[] = [{ role: "system", content: system }];
   for (const [q, a] of history) {
     messages.push({ role: "user", content: q });
