@@ -17,6 +17,9 @@ import { canFetch, type Robots } from "./robots";
 export const USER_AGENT = `WebsiteAssistantBot/${VERSION} (+website assistant crawler)`;
 export const SITEMAP_PATHS = ["/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml"];
 export const MAX_PAGE_BYTES = 5_000_000;
+export const MAX_DOCUMENT_BYTES = 20_000_000;
+/** Files linked from the site that are read like uploaded documents (crawl setting read_documents). */
+export const DOC_EXTENSIONS = [".pdf", ".docx", ".xlsx"];
 export const MAX_SITEMAPS = 200;
 export const SKIP_EXTENSIONS = [
   ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".css", ".js", ".json", ".xml", ".zip",
@@ -55,6 +58,15 @@ export interface CrawlConfig {
   include_patterns: string[];
   exclude_patterns: string[];
   extraction: string; // auto | main_content
+  render_js?: string; // auto | always | never: open JavaScript-built pages in a browser
+  read_images?: boolean; // describe pictures and read the text in them (Workers AI)
+  read_documents?: boolean; // read linked PDF, Word and Excel files
+}
+
+/** A linked PDF/Word/Excel file that the crawl reads (when read_documents is on). */
+export function isDocumentUrl(url: string): boolean {
+  const path = urlparse(url).path.toLowerCase();
+  return DOC_EXTENSIONS.some((ext) => path.endsWith(ext));
 }
 
 export function sameSite(site: string, url: string): boolean {
@@ -66,7 +78,7 @@ export function allowed(config: CrawlConfig, site: string, robots: Robots, url: 
   const path = urlparse(url).path.toLowerCase();
   return (
     sameSite(site, url) &&
-    !SKIP_EXTENSIONS.some((ext) => path.endsWith(ext)) &&
+    (!SKIP_EXTENSIONS.some((ext) => path.endsWith(ext)) || (config.read_documents !== false && isDocumentUrl(url))) &&
     canFetch(robots, USER_AGENT, url) &&
     matchesPatterns(url, config.include_patterns, config.exclude_patterns)
   );
@@ -90,7 +102,7 @@ export interface Fetched {
 }
 
 /** GET with redirects followed; the body is cut at MAX_PAGE_BYTES (decompressed by the runtime). */
-export async function fetchCapped(url: string, fetcher: typeof fetch = fetch): Promise<Fetched> {
+export async function fetchCapped(url: string, fetcher: typeof fetch = fetch, maxBytes = MAX_PAGE_BYTES): Promise<Fetched> {
   let resp: Response;
   try {
     resp = await fetcher(url, { redirect: "follow", headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -109,7 +121,7 @@ export async function fetchCapped(url: string, fetcher: typeof fetch = fetch): P
         if (done) break;
         chunks.push(value);
         size += value.byteLength;
-        if (size > MAX_PAGE_BYTES) {
+        if (size > maxBytes) {
           await reader.cancel();
           break;
         }

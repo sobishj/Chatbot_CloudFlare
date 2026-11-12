@@ -42,6 +42,11 @@
     "binding": "AI",
     "remote": true
   },
+  // Browser Rendering: the crawler opens JavaScript-built websites (React, Vue, …) in a headless
+  // browser to read what visitors see. Free plan: 10 browser minutes per day.
+  "browser": {
+    "binding": "BROWSER"
+  },
   // Workers KV: uploaded documents (up to 25 MB each), logos and large extracted texts.
   // `wrangler kv namespace create FILES_KV`, then paste its id here.
   // (`wrangler dev` stores KV locally.)

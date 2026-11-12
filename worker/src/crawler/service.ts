@@ -9,10 +9,18 @@
  *              is the crawl_frontier table
  *   finish   → remove pages that are gone (404/410) and, after a complete crawl, pages no longer
  *              linked/listed; set last_crawl_at
+ *
+ * Reading "everything" (crawl settings, all on by default):
+ *   render_js      → pages that arrive nearly empty (JavaScript-built sites) are opened in Cloudflare
+ *                    Browser Rendering and read as visitors see them (crawler/render.ts)
+ *   read_images    → pictures are described and the text in them is read (crawler/images.ts)
+ *   read_documents → linked PDF, Word and Excel files are read like uploaded documents
+ * The start page also keeps its site header and footer, where contact details often are.
  */
 
 import type { Env } from "../env";
 import type { Client } from "../models";
+import { cleanMarkdown } from "../documents/service";
 import { getEmbedder } from "../embeddings/embedder";
 import { chunkIds, deleteVectors } from "../indexer/cleanup";
 import { indexStep, newIndexCursor, type IndexCursor } from "../indexer/indexer";
@@ -22,8 +30,10 @@ import { getSetting } from "../services/settings";
 import { all, first, nowIso, run } from "../util/db";
 import { hostnameOf, urlparse } from "../util/pyurl";
 import type { StepContext, StepResult } from "../worker/runner";
-import { allowed, decodeBody, FetchError, fetchCapped, MAX_SITEMAPS, normalizeUrl, parseSitemap, RobotsBlocked, robotsLines, sameSite, siteKey, SITEMAP_PATHS, USER_AGENT, type CrawlConfig, type Fetched } from "./crawler";
+import { allowed, decodeBody, FetchError, fetchCapped, isDocumentUrl, MAX_DOCUMENT_BYTES, MAX_PAGE_BYTES, MAX_SITEMAPS, normalizeUrl, parseSitemap, RobotsBlocked, robotsLines, sameSite, siteKey, SITEMAP_PATHS, USER_AGENT, type CrawlConfig, type Fetched } from "./crawler";
 import { extract } from "./extract";
+import { describeImages } from "./images";
+import { closeSession, needsRendering, RenderLimit, renderPage } from "./render";
 import { crawlDelay, parseRobots, type Robots } from "./robots";
 
 interface CrawlCursor {
@@ -48,6 +58,13 @@ interface CrawlCursor {
   stats: { new: number; updated: number; unchanged: number; removed: number; chunks: number };
   next_fetch_at: number;
   index: { cursor: IndexCursor; url: string } | null;
+  // Reading everything (absent in cursors of crawls started before this existed).
+  browser_session?: string | null;
+  render_off?: boolean; // Browser Rendering unavailable or its limit reached: plain HTML for the rest
+  rendered?: number;
+  images_left?: number;
+  images_read?: number;
+  documents?: number;
 }
 
 // Frontier states.
@@ -59,6 +76,14 @@ const SKIPPED = 3;
 const PAGES_PER_STEP = 2;
 const MAX_WAIT_IN_STEP_MS = 2500;
 const MAX_ERRORS_KEPT = 50;
+const MAX_IMAGES_PER_CRAWL = 150; // new pictures read per crawl (cached ones don't count)
+const IMAGE_TIME_MS = 60_000; // per page, so a job step stays well inside its lease
+// Content types of the files read with read_documents (PDF, Word, Excel).
+const DOC_TYPES: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+};
 
 /** URLs kept in the frontier: enough for the page limit plus pages that turn out not to count. */
 function frontierCap(maxPages: number): number {
@@ -75,6 +100,9 @@ function newCursor(client: Client): CrawlCursor {
     include_patterns: [...settings.include_patterns],
     exclude_patterns: [...settings.exclude_patterns],
     extraction: String(settings.extraction ?? "auto"),
+    render_js: String(settings.render_js ?? "auto"),
+    read_images: settings.read_images !== false,
+    read_documents: settings.read_documents !== false,
   };
   const start = urlparse(config.start_url);
   const host = hostnameOf(start.netloc);
@@ -101,6 +129,12 @@ function newCursor(client: Client): CrawlCursor {
     stats: { new: 0, updated: 0, unchanged: 0, removed: 0, chunks: 0 },
     next_fetch_at: 0,
     index: null,
+    browser_session: null,
+    render_off: false,
+    rendered: 0,
+    images_left: MAX_IMAGES_PER_CRAWL,
+    images_read: 0,
+    documents: 0,
   };
 }
 
@@ -116,9 +150,9 @@ async function waitTurn(ctx: StepContext, cur: CrawlCursor): Promise<boolean> {
   return false;
 }
 
-async function get(cur: CrawlCursor, url: string): Promise<Fetched> {
+async function get(cur: CrawlCursor, url: string, maxBytes = MAX_PAGE_BYTES): Promise<Fetched> {
   cur.next_fetch_at = Date.now() + cur.delay * 1000;
-  return fetchCapped(url);
+  return fetchCapped(url, fetch, maxBytes);
 }
 
 /** Add URLs to the frontier (deduplicated); returns how many were new. */
@@ -281,6 +315,11 @@ export async function crawlStep(ctx: StepContext, client: Client): Promise<StepR
     await deleteVectors(env.VECTORIZE, ids);
     cur.stats.removed++;
   }
+  await closeSession(env, cur.browser_session ?? null);
+  cur.browser_session = null;
+  if (cur.rendered || cur.images_read || cur.documents) {
+    ctx.log(`Read ${cur.rendered ?? 0} pages with JavaScript, ${cur.images_read ?? 0} new pictures, ${cur.documents ?? 0} linked documents`);
+  }
   await env.DB.batch([
     env.DB.prepare("UPDATE clients SET last_crawl_at = ? WHERE id = ?").bind(nowIso(), client.id),
     env.DB.prepare("DELETE FROM crawl_frontier WHERE job_id = ?").bind(jobId),
@@ -292,7 +331,11 @@ export async function crawlStep(ctx: StepContext, client: Client): Promise<StepR
   );
   return {
     done: true,
-    result: { ...s, pages_crawled: cur.pages, failed: cur.failed, hit_limit: cur.hit_limit, used_sitemap: cur.used_sitemap, errors: cur.errors.slice(0, MAX_ERRORS_KEPT) },
+    result: {
+      ...s, pages_crawled: cur.pages, failed: cur.failed, hit_limit: cur.hit_limit, used_sitemap: cur.used_sitemap,
+      rendered: cur.rendered ?? 0, images_read: cur.images_read ?? 0, documents: cur.documents ?? 0,
+      errors: cur.errors.slice(0, MAX_ERRORS_KEPT),
+    },
   };
 }
 
@@ -308,34 +351,125 @@ async function crawlOne(ctx: StepContext, client: Client, cur: CrawlCursor, url:
     await markStmt(env, jobId, cur, url, state).run();
     return false;
   };
+  const readDocs = cur.config.read_documents !== false;
   let resp: Fetched;
   try {
-    resp = await get(cur, url);
+    resp = await get(cur, url, readDocs && isDocumentUrl(url) ? MAX_DOCUMENT_BYTES : MAX_PAGE_BYTES);
   } catch (exc) {
     return fail(SKIPPED, `${url}: ${exc instanceof FetchError ? exc.kind : (exc as Error).name}`);
   }
   if (resp.status === 404 || resp.status === 410) return fail(GONE);
   const finalUrl = normalizeUrl(resp.url);
-  const html = resp.status === 200 && resp.contentType.toLowerCase().includes("html");
-  if (!html) return fail(SKIPPED, resp.status !== 200 ? `${url}: HTTP ${resp.status}` : undefined);
+  if (resp.status !== 200) return fail(SKIPPED, `${url}: HTTP ${resp.status}`);
   if (!sameSite(cur.site, finalUrl)) return fail(SKIPPED); // redirected off-site
-  const extracted = extract(decodeBody(resp), finalUrl, cur.config.extraction);
+  const type = resp.contentType.toLowerCase().split(";")[0].trim();
+  const docExt = DOC_TYPES[type] ?? (isDocumentUrl(finalUrl) && !type.includes("html") ? "." + urlparse(finalUrl).path.split(".").pop()!.toLowerCase() : null);
+  let page: { title: string; text: string; links: string[] } | null = null;
+  let heavy = false; // browser or AI work: end the job step after this page
+  if (docExt && readDocs) {
+    heavy = true;
+    try {
+      page = await readLinkedDocument(env, resp, finalUrl, docExt);
+      cur.documents = (cur.documents ?? 0) + 1;
+    } catch (exc) {
+      return fail(SKIPPED, `${url}: ${(exc as Error).message}`);
+    }
+  } else if (!type.includes("html")) {
+    return fail(SKIPPED);
+  } else {
+    const result = await readHtmlPage(ctx, cur, url, finalUrl, decodeBody(resp));
+    page = result.page;
+    heavy = result.heavy;
+  }
   const alreadyDone = finalUrl !== url && Boolean(await first(env.DB, "SELECT 1 FROM crawl_frontier WHERE job_id = ? AND url = ? AND state = ?", jobId, finalUrl, SEEN));
   await env.DB.batch([markStmt(env, jobId, cur, url, SEEN), ...(finalUrl !== url ? [markStmt(env, jobId, cur, finalUrl, SEEN)] : [])]);
   if (alreadyDone) return false;
   let indexed: boolean | "pending" = false;
-  if (extracted.text.trim()) {
+  if (page.text.trim()) {
     cur.pages++;
-    indexed = await onPage(ctx, client, cur, finalUrl, extracted.title, extracted.text, embedder);
+    indexed = await onPage(ctx, client, cur, finalUrl, page.title, page.text, embedder);
   }
-  if (cur.follow_links) {
-    const links = extracted.links.map(normalizeUrl).filter((l) => allowed(cur.config, cur.site, cur.robots, l));
-    await enqueueUrls(env, jobId, cur, links);
-  }
+  // Follow links when there is no sitemap; linked documents are picked up either way.
+  const links = page.links.map(normalizeUrl).filter((l) => allowed(cur.config, cur.site, cur.robots, l));
+  await enqueueUrls(env, jobId, cur, cur.follow_links ? links : links.filter(isDocumentUrl));
   const done = cur.pages + cur.failed;
   const total = Math.min(cur.config.max_pages, cur.queued);
   ctx.progress((done * 100) / Math.max(total, 1), `${done} of ${total} pages · ${finalUrl}`);
-  return indexed;
+  return indexed || (heavy ? true : false);
+}
+
+/**
+ * An HTML page's title, text (with what its pictures show) and links. Pages that arrive nearly
+ * empty are opened in the browser first (render_js); ``heavy`` says browser or AI work was done.
+ */
+async function readHtmlPage(ctx: StepContext, cur: CrawlCursor, url: string, finalUrl: string, html: string): Promise<{ page: { title: string; text: string; links: string[] }; heavy: boolean }> {
+  const env = ctx.env;
+  const start = normalizeUrl(cur.config.start_url);
+  const options = { keepChrome: url === start || finalUrl === start };
+  let extracted = extract(html, finalUrl, cur.config.extraction, options);
+  let images = extracted.images ?? [];
+  let heavy = false;
+  const mode = cur.config.render_js ?? "auto";
+  if (mode !== "never" && !cur.render_off && (mode === "always" || needsRendering(html, extracted))) {
+    if (!env.BROWSER) {
+      cur.render_off = true;
+      ctx.log("Browser Rendering isn't set up: JavaScript-built pages are read without running their scripts");
+    } else {
+      heavy = true;
+      try {
+        const session = { id: cur.browser_session ?? null };
+        const rendered = await renderPage(env, finalUrl, session);
+        cur.browser_session = session.id;
+        const full = extract(rendered.html, finalUrl, cur.config.extraction, options);
+        if ((full.bodyChars ?? 0) > (extracted.bodyChars ?? 0)) {
+          extracted = { ...full, links: [...new Set([...extracted.links, ...full.links])] };
+          images = [...rendered.images, ...(full.images ?? [])];
+          cur.rendered = (cur.rendered ?? 0) + 1;
+        }
+      } catch (exc) {
+        const message = String((exc as Error)?.message ?? exc).slice(0, 200);
+        if (exc instanceof RenderLimit) {
+          cur.render_off = true;
+          ctx.log(`Browser Rendering limit reached (${message}); the remaining pages are read without JavaScript`);
+        } else if (cur.errors.length < MAX_ERRORS_KEPT) {
+          cur.errors.push(`${url}: couldn't open in the browser (${message})`);
+        }
+      }
+    }
+  }
+  let text = extracted.text;
+  if (cur.config.read_images !== false && images.length) {
+    const budget = { left: cur.images_left ?? MAX_IMAGES_PER_CRAWL, deadline: Date.now() + IMAGE_TIME_MS };
+    const { section, read } = await describeImages(env, images, budget);
+    cur.images_left = budget.left;
+    cur.images_read = (cur.images_read ?? 0) + read;
+    if (read) heavy = true;
+    if (section) text = text.trim() ? `${text}\n\n${section}` : section;
+  }
+  return { page: { title: extracted.title, text, links: extracted.links }, heavy };
+}
+
+/** A PDF, Word or Excel file linked from the site, read with Workers AI like an uploaded document. */
+async function readLinkedDocument(env: Env, resp: Fetched, url: string, ext: string): Promise<{ title: string; text: string; links: string[] }> {
+  if (resp.body.byteLength >= MAX_DOCUMENT_BYTES) throw new Error(`file is larger than ${MAX_DOCUMENT_BYTES / 1_000_000} MB`);
+  let name = "document" + ext;
+  try {
+    const last = decodeURIComponent(urlparse(url).path.split("/").pop() || "");
+    if (last) name = last.toLowerCase().endsWith(ext) ? last : last + ext;
+  } catch {
+    // keep the generic name
+  }
+  let result: any;
+  try {
+    result = await env.AI.toMarkdown({ name, blob: new Blob([resp.body], { type: resp.contentType.split(";")[0] || undefined }) });
+    if (Array.isArray(result)) result = result[0];
+  } catch (exc) {
+    throw new Error(`couldn't read the file (${(exc as Error)?.name || "Error"})`);
+  }
+  if (!result || result.format === "error") throw new Error(`couldn't read the file (${String(result?.error || "conversion failed").slice(0, 200)})`);
+  const text = cleanMarkdown(String(result.data ?? ""), name);
+  if (!text.trim()) throw new Error("no text found in the file");
+  return { title: name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || name, text, links: [] };
 }
 
 /** New/changed page: store and index it; unchanged: just note it was seen. */

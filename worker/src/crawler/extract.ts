@@ -105,6 +105,8 @@ class Builder {
   baseHref: string | null = null;
   inTitle = 0;
   inH1 = 0;
+  keepChrome = false;
+  images: { src: string; alt: string }[] = [];
 
   top(): Frame | null {
     return this.stack.length ? this.stack[this.stack.length - 1] : null;
@@ -128,7 +130,11 @@ class Builder {
     const idx = this.counter++;
     const cls = attrs.get("class") ?? null;
     const role = attrs.get("role") ?? null;
-    const dropped = (parent?.dropped ?? false) || isDropped(tag, { role, ariaHidden: attrs.get("aria-hidden"), elementor: attrs.get("data-elementor-type"), cls, id: attrs.get("id") });
+    const dropped = (parent?.dropped ?? false) || isDropped(tag, { role, ariaHidden: attrs.get("aria-hidden"), elementor: attrs.get("data-elementor-type"), cls, id: attrs.get("id") }, this.keepChrome);
+    if (tag === "img" && !dropped) {
+      const src = imageSrc(attrs);
+      if (src) this.images.push({ src, alt: collapse(attrs.get("alt") ?? "").trim() });
+    }
     const head = (parent?.head ?? false) || tag === "head" || tag === "title";
     const link = (parent?.link ?? false) || tag === "a";
     const foreign = (parent?.foreign ?? false) || FOREIGN.has(tag);
@@ -363,10 +369,29 @@ class Builder {
   }
 }
 
-/** Extract title, text and outgoing links from an HTML page. */
-export function extract(html: string, url: string, mode = "auto"): Extracted {
+/** An <img>'s picture: src, else a lazy-loading attribute, else the largest srcset entry. */
+function imageSrc(attrs: Map<string, string>): string {
+  for (const name of ["src", "data-src", "data-lazy-src", "data-original"]) {
+    const v = (attrs.get(name) ?? "").trim();
+    if (v && !v.startsWith("data:")) return v;
+  }
+  for (const name of ["srcset", "data-srcset"]) {
+    const entries = (attrs.get(name) ?? "").split(",").map((e) => e.trim().split(/\s+/)[0]).filter((e) => e && !e.startsWith("data:"));
+    if (entries.length) return entries[entries.length - 1];
+  }
+  return "";
+}
+
+export interface ExtractOptions {
+  /** Keep the site header and footer (the start page: contact details often live there). */
+  keepChrome?: boolean;
+}
+
+/** Extract title, text, outgoing links and content images from an HTML page. */
+export function extract(html: string, url: string, mode = "auto", options: ExtractOptions = {}): Extracted {
   if (!html.trim()) return { title: "", text: "", links: [] };
   const b = new Builder();
+  b.keepChrome = Boolean(options.keepChrome);
   tokenize(html, b);
   b.finish();
 
@@ -383,6 +408,15 @@ export function extract(html: string, url: string, mode = "auto"): Extracted {
   } else {
     body = b.text_();
   }
-  const text = withDescription(cleanLines(body), description);
-  return { title, text: text.slice(0, MAX_TEXT_CHARS), links };
+  const own = cleanLines(body);
+  const text = withDescription(own, description);
+  const images: { url: string; alt: string }[] = [];
+  const seen = new Set<string>();
+  for (const img of b.images) {
+    const abs = urljoin(base, img.src);
+    if (!/^https?:\/\//i.test(abs) || seen.has(abs)) continue;
+    seen.add(abs);
+    images.push({ url: abs, alt: img.alt });
+  }
+  return { title, text: text.slice(0, MAX_TEXT_CHARS), links, images, bodyChars: own.length };
 }

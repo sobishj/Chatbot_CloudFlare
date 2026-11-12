@@ -16,12 +16,17 @@ export interface DropAttrs {
   id?: string | null;
 }
 
-/** The _DROP_XPATH test for one element. */
-export function isDropped(tag: string, a: DropAttrs): boolean {
-  if (DROP_TAGS.has(tag)) return true;
-  if (a.role && DROP_ROLES.has(a.role)) return true;
+// Site-wide header and footer: usually dropped (they repeat on every page), but kept on the start
+// page, where they often hold the only phone number, email and address of the site.
+const CHROME_TAGS = new Set(["header", "footer"]);
+const CHROME_ROLES = new Set(["banner", "contentinfo"]);
+
+/** The _DROP_XPATH test for one element; ``keepChrome`` keeps the site header and footer. */
+export function isDropped(tag: string, a: DropAttrs, keepChrome = false): boolean {
+  if (DROP_TAGS.has(tag) && !(keepChrome && CHROME_TAGS.has(tag))) return true;
+  if (a.role && DROP_ROLES.has(a.role) && !(keepChrome && CHROME_ROLES.has(a.role))) return true;
   if (a.ariaHidden === "true") return true;
-  if (a.elementor && DROP_ELEMENTOR.has(a.elementor)) return true;
+  if (a.elementor && DROP_ELEMENTOR.has(a.elementor) && !(keepChrome && a.elementor !== "popup")) return true;
   if (a.cls !== null && a.cls !== undefined) {
     if ((" " + a.cls.trim().split(/[ \t\n\r\f]+/).join(" ") + " ").includes(" screen-reader-text ")) return true;
     if (a.cls.includes("cookie")) return true;
@@ -93,10 +98,19 @@ export function followable(href: string): boolean {
   return Boolean(href) && !(href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:"));
 }
 
+export interface PageImage {
+  url: string;
+  alt: string;
+}
+
 export interface Extracted {
   title: string;
   text: string;
   links: string[];
+  /** Pictures in the page's content (absolute URLs, de-duplicated), with their alt text. */
+  images?: PageImage[];
+  /** Length of the page's own text, without the meta description: near 0 for JavaScript-built pages. */
+  bodyChars?: number;
 }
 
 /** The page's own summary: often the only text a JavaScript-built site sends to non-browsers. */

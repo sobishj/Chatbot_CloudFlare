@@ -44,6 +44,9 @@ function CrawlSettings({ client, reload }: TabProps) {
   const [include, setInclude] = useState(s.include_patterns.join("\n"));
   const [exclude, setExclude] = useState(s.exclude_patterns.join("\n"));
   const [extraction, setExtraction] = useState(s.extraction ?? "auto");
+  const [renderJs, setRenderJs] = useState(s.render_js ?? "auto");
+  const [readImages, setReadImages] = useState(s.read_images !== false);
+  const [readDocuments, setReadDocuments] = useState(s.read_documents !== false);
   const { busy, run } = useAction();
   return (
     <Card title="Crawl settings">
@@ -58,10 +61,19 @@ function CrawlSettings({ client, reload }: TabProps) {
             <option value="main_content">Main article only</option>
           </select>
         </Field>
+        <Field label="JavaScript websites" htmlFor="cr-js" full hint="Sites built with React, Vue or similar send almost no text until their scripts run. These pages are opened in a real browser (Cloudflare Browser Rendering, 10 free minutes a day) and read as visitors see them.">
+          <select id="cr-js" className="select" value={renderJs} onChange={(e) => setRenderJs(e.target.value as typeof renderJs)}>
+            <option value="auto">Open in a browser when a page looks empty (recommended)</option>
+            <option value="always">Always open pages in a browser (slower)</option>
+            <option value="never">Never: read the plain HTML only</option>
+          </select>
+        </Field>
+        <label className="check full"><input type="checkbox" checked={readImages} onChange={(e) => setReadImages(e.target.checked)} />Read pictures: describe them and read the text in them (banners, posters, price lists). Uses Workers AI; each picture is read once and remembered for 60 days.</label>
+        <label className="check full"><input type="checkbox" checked={readDocuments} onChange={(e) => setReadDocuments(e.target.checked)} />Read PDF, Word and Excel files linked from the website</label>
       </div>
       <div className="row end" style={{ marginTop: 14 }}>
         <Button kind="primary" loading={busy} onClick={() => run(async () => {
-          await api(`/api/admin/clients/${client.client_id}/crawl-settings`, { method: "PUT", body: { max_pages: maxPages, delay_seconds: delay, include_patterns: include, exclude_patterns: exclude, extraction } });
+          await api(`/api/admin/clients/${client.client_id}/crawl-settings`, { method: "PUT", body: { max_pages: maxPages, delay_seconds: delay, include_patterns: include, exclude_patterns: exclude, extraction, render_js: renderJs, read_images: readImages, read_documents: readDocuments } });
           await reload();
         }, "Crawl settings saved")}>Save</Button>
       </div>

@@ -47,6 +47,9 @@ export const DEFAULT_CRAWL_SETTINGS: Record<string, any> = {
   delay_seconds: 1.0,
   include_patterns: [], // e.g. ["/stores/*"]; empty = everything
   exclude_patterns: [], // e.g. ["/careers/*", "*?print=*"]
+  render_js: "auto", // auto | always | never: open JavaScript-built pages in a browser (Browser Rendering)
+  read_images: true, // describe pictures and read the text in them (Workers AI)
+  read_documents: true, // read PDF, Word and Excel files linked from the site
 };
 
 export const DEFAULT_DOCUMENT_SETTINGS: Record<string, any> = {
@@ -242,6 +245,13 @@ export function validateCrawlSettings(changes: Record<string, any>): Record<stri
       if (typeof items === "string") items = items.split(/\r\n|\r|\n/);
       clean[key] = (items as unknown[]).map((p) => String(p).trim()).filter(Boolean).slice(0, 100);
     }
+  }
+  if ("render_js" in changes) {
+    if (!["auto", "always", "never"].includes(String(changes.render_js))) throw new ClientError("JavaScript rendering must be auto, always or never.");
+    clean.render_js = String(changes.render_js);
+  }
+  for (const key of ["read_images", "read_documents"]) {
+    if (key in changes) clean[key] = Boolean(changes[key]);
   }
   return clean;
 }

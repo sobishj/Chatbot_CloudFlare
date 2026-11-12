@@ -6,6 +6,8 @@ export interface Env {
   /** Workers KV: uploaded documents, logos and large extracted texts (see src/storage/files.ts). */
   FILES_KV: KVNamespace;
   ASSETS: Fetcher;
+  /** Cloudflare Browser Rendering: opens JavaScript-built pages for the crawler (optional). */
+  BROWSER?: Fetcher;
   /** `wrangler secret put SECRET_KEY`: encrypts API keys and signs sessions (32+ characters). */
   SECRET_KEY: string;
   /** Optional: when set, the admin UI API answers only on this host name (e.g. admin.example.com). */

@@ -164,7 +164,7 @@ export interface Client {
   last_crawl_at: string | null;
   created_at: string;
   branding: Branding;
-  crawl_settings: { max_pages: number; delay_seconds: number; include_patterns: string[]; exclude_patterns: string[]; extraction?: string };
+  crawl_settings: { max_pages: number; delay_seconds: number; include_patterns: string[]; exclude_patterns: string[]; extraction?: string; render_js?: "auto" | "always" | "never"; read_images?: boolean; read_documents?: boolean };
   document_settings: { watch_path: string | null; scan_interval_minutes: number; last_scan_at: string | null };
   api_actions_enabled: boolean;
   pages: number;

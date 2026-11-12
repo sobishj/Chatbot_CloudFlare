@@ -33,6 +33,9 @@ export function registerClientWebsite(app: Hono<AppEnv>): void {
       include_patterns: { kind: "any", default: null },
       exclude_patterns: { kind: "any", default: null },
       extraction: { kind: "str", default: null },
+      render_js: { kind: "str", default: null },
+      read_images: { kind: "bool", default: null },
+      read_documents: { kind: "bool", default: null },
     });
     requireSuper(user);
     const present = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null));
