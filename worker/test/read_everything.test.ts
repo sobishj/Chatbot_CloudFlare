@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extract } from "../src/crawler/extract";
 import { candidateImages, plainText } from "../src/crawler/images";
 import { needsRendering } from "../src/crawler/render";
+import { hasText } from "../src/documents/service";
 import { createClient } from "../src/services/clients";
 import * as jobService from "../src/services/jobs";
 import { all, run } from "../src/util/db";
@@ -46,6 +47,11 @@ describe("extraction for reading everything", () => {
     expect(list.map((i) => i.url)).toEqual([SITE + "/photo.jpg"]);
     // Logos say nothing useful and their descriptions are long: skipped by file name or alt text.
     expect(candidateImages([{ url: SITE + "/assets/logo-A2Br.webp", alt: "Taxlead" }, { url: SITE + "/x.png", alt: "Company logo" }], 10)).toEqual([]);
+  });
+
+  it("treats a PDF of page markers only as having no text (scanned pages)", () => {
+    expect(hasText("[Page 1]\n\n\n[Page 2]\n\n[Page 3]")).toBe(false);
+    expect(hasText("[Page 1]\nFees from Rs 999")).toBe(true);
   });
 
   it("turns the AI's markdown description into one plain line", () => {

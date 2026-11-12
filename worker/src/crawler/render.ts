@@ -54,7 +54,20 @@ const COLLECT_IMAGES = `(() => {
 // doesn't show ("Project Reports" + "Know your business" would read "Project ReportsKnow your …").
 // A space before and after every element the browser shows as a block keeps the words apart
 // (also "<strong>Title</strong><p>Text</p>": inline text followed by a block).
+// It also removes initials badges ("SJ" in a circle next to "Soyson Joseph Thonakkara"): read as
+// text they become part of the name.
 const SEPARATE_BLOCKS = `(() => {
+  for (const el of Array.from(document.querySelectorAll("body *"))) {
+    if (el.children.length === 0 && /^[A-Z]{1,3}$/.test((el.textContent || "").trim())) {
+      const s = getComputedStyle(el);
+      const round = parseFloat(s.borderTopLeftRadius) >= Math.min(el.offsetWidth, el.offsetHeight) / 3;
+      const square = el.offsetWidth > 0 && Math.abs(el.offsetWidth - el.offsetHeight) <= 8;
+      if ((round && square) || /avatar|initial|monogram/i.test(String(el.className || "") + " " + String((el.parentElement || {}).className || ""))) {
+        el.remove();
+        continue;
+      }
+    }
+  }
   for (const el of Array.from(document.querySelectorAll("body *"))) {
     const d = getComputedStyle(el).display;
     if (d && d !== "inline" && d !== "contents" && d !== "none" && el.parentNode && !/^(SCRIPT|STYLE|TEMPLATE)$/.test(el.tagName)) {

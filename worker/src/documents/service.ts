@@ -158,6 +158,11 @@ function decodeText(raw: Uint8Array): string {
  * linearized, ...) that would end up in search chunks: keep only the content. PDF pages
  * ("### Page 3") become the "[Page 3]" markers the self-hosted reader wrote.
  */
+/** False for "[Page 1] [Page 2] …" alone: a PDF whose pages are pictures (scanned) has no text. */
+export function hasText(text: string): boolean {
+  return text.replace(/\[Page \d+\]/g, "").trim().length > 0;
+}
+
 export function cleanMarkdown(md: string, filename: string): string {
   const lines = md.replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
@@ -211,7 +216,7 @@ async function readDocument(env: Env, key: string, filename: string, expectedHas
   }
   // Table-of-contents leaders ("Overview ........ 3") drown out the real words of a chunk in search.
   text = text.replace(LEADER_RE, " … ").trim();
-  if (!text) {
+  if (!hasText(text)) {
     if (ext === ".pdf") throw new EmptyDocument("No text found: this looks like a scanned PDF.");
     throw new EmptyDocument("No text found in the document.");
   }

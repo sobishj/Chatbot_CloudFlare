@@ -20,7 +20,7 @@
 
 import type { Env } from "../env";
 import type { Client } from "../models";
-import { cleanMarkdown } from "../documents/service";
+import { cleanMarkdown, hasText } from "../documents/service";
 import { getEmbedder } from "../embeddings/embedder";
 import { chunkIds, deleteVectors } from "../indexer/cleanup";
 import { indexStep, newIndexCursor, type IndexCursor } from "../indexer/indexer";
@@ -468,7 +468,7 @@ async function readLinkedDocument(env: Env, resp: Fetched, url: string, ext: str
   }
   if (!result || result.format === "error") throw new Error(`couldn't read the file (${String(result?.error || "conversion failed").slice(0, 200)})`);
   const text = cleanMarkdown(String(result.data ?? ""), name);
-  if (!text.trim()) throw new Error("no text found in the file");
+  if (!hasText(text)) throw new Error(ext === ".pdf" ? "no text found: the pages are pictures (a scanned PDF)" : "no text found in the file");
   return { title: name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || name, text, links: [] };
 }
 
