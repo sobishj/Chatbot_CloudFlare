@@ -150,19 +150,19 @@ export class PreparedAnswer {
   async modelInputs(deps: ChatDeps): Promise<[ModelConfig[], ChatMessage[]]> {
     const db = this.env.DB;
     const b = branding(this.client);
-    const history = await loadHistory(db, this.client.id, this.sessionId, this.channel);
-    const embedder = await embedderFor(this.env, deps);
+    const listQuestion = isListQuestion(this.question);
+    // Independent lookups run together; only the search has to wait (for history and embedder).
+    const later = <T,>(p: Promise<T>) => (p.catch(() => {}), p); // awaited below; no unhandled rejection meanwhile
+    const keyInfoP = later(keyInformation(db, this.client.id, documentSettings(this.client).key_facts || ""));
+    const directoryP = later(listQuestion ? pageDirectory(db, this.client.id) : Promise.resolve(""));
+    const chainP = later(resolveChain(db, this.env.SECRET_KEY, this.client));
+    const [history, embedder] = await Promise.all([loadHistory(db, this.client.id, this.sessionId, this.channel), embedderFor(this.env, deps)]);
     const result = await search(this.env, embedder, this.client.id, this.question, null, history.length ? history[history.length - 1][0] : null);
     this.response.hits = result.hits;
     this.response.confidence = Math.round(result.confidence * 10000) / 10000;
-    const docSettings = documentSettings(this.client);
-    const listQuestion = isListQuestion(this.question);
-    const [keyInfo, directory] = await Promise.all([
-      keyInformation(db, this.client.id, docSettings.key_facts || ""),
-      listQuestion ? pageDirectory(db, this.client.id) : Promise.resolve(""),
-    ]);
+    const [keyInfo, directory] = await Promise.all([keyInfoP, directoryP]);
     const messages = buildMessages(this.settings.system_prompt, b.bot_name, this.client.name, result.hits, history, this.question, keyInfo, localNow(b.timezone, this.settings.timezone), directory, b.contact_details || "");
-    let chain = await resolveChain(db, this.env.SECRET_KEY, this.client);
+    let chain = await chainP;
     if (!chain.length) throw new LLMError("No AI model is configured. Add one in Settings → AI Models.");
     // Completeness needs the model's reasoning; other answers start faster without it.
     if (listQuestion) chain = chain.map((cfg) => ({ ...cfg, deep: true }));

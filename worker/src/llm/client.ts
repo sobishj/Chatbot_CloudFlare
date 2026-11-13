@@ -485,14 +485,15 @@ function buildGemini(cfg: ModelConfig, base: string, messages: ChatMessage[], op
   };
 }
 
-async function send(cfg: ModelConfig, built: Built): Promise<Response> {
+async function send(cfg: ModelConfig, built: Built, cancel?: AbortSignal): Promise<Response> {
+  const timeout = AbortSignal.timeout(cfg.timeout_seconds * 1000);
   let resp: Response;
   try {
     resp = await fetch(built.url, {
       method: "POST",
       headers: built.headers,
       body: JSON.stringify(built.body),
-      signal: AbortSignal.timeout(cfg.timeout_seconds * 1000),
+      signal: cancel ? AbortSignal.any([timeout, cancel]) : timeout,
     });
   } catch (exc) {
     throw networkError(cfg, exc);
@@ -502,11 +503,19 @@ async function send(cfg: ModelConfig, built: Built): Promise<Response> {
 }
 
 /** POST the call; if the model rejects our reasoning setting, retry with a milder one, then none. */
-async function sendWithRelax(cfg: ModelConfig, messages: ChatMessage[], opts: CallOptions, cap: number, tools: any[] | null, stream: boolean): Promise<Response> {
+async function sendWithRelax(
+  cfg: ModelConfig,
+  messages: ChatMessage[],
+  opts: CallOptions,
+  cap: number,
+  tools: any[] | null,
+  stream: boolean,
+  cancel?: AbortSignal,
+): Promise<Response> {
   let current: CallOptions = opts;
   for (;;) {
     try {
-      return await send(cfg, buildRequest(cfg, messages, current, cap, tools, stream));
+      return await send(cfg, buildRequest(cfg, messages, current, cap, tools, stream), cancel);
     } catch (exc) {
       const retry = rejectsThinking(exc) ? relaxed(current) : null;
       if (retry === null) throw exc;
@@ -659,14 +668,20 @@ async function* sseEvents(resp: Response): AsyncGenerator<{ event: string; data:
  * Like complete(), but yields the reply's text pieces as the model writes them, then one final
  * LLMResult (full text, usage, cost). Throws LLMError on failure.
  */
-export async function* streamComplete(cfg: ModelConfig, messages: ChatMessage[], maxTokens?: number | null): AsyncGenerator<string | LLMResult> {
+/** ``cancel`` stops the request (and the reading of its stream), e.g. when another model answered first. */
+export async function* streamComplete(
+  cfg: ModelConfig,
+  messages: ChatMessage[],
+  maxTokens?: number | null,
+  cancel?: AbortSignal,
+): AsyncGenerator<string | LLMResult> {
   const [opts, cap] = requestOptions(cfg, maxTokens);
   const started = Date.now();
   let text = "";
   let input = 0;
   let output = 0;
   try {
-    const resp = await sendWithRelax(cfg, messages, opts, cap, null, true);
+    const resp = await sendWithRelax(cfg, messages, opts, cap, null, true, cancel);
     for await (const ev of sseEvents(resp)) {
       if (ev.data === "[DONE]") break;
       let chunk: any;

@@ -12,7 +12,7 @@ import { LLMError, streamComplete, type ChatMessage, type LLMResult, type ModelC
 import { NO_ANSWER_RE_SRC, NO_ANSWER_TAG } from "./prompt";
 import { actionsHook, defaultDeps, isAnswerFailure, prepareAnswer, type ChatDeps, type ChatResponse } from "./service";
 
-export type StreamLLM = (cfg: ModelConfig, messages: ChatMessage[]) => AsyncGenerator<string | LLMResult>;
+export type StreamLLM = (cfg: ModelConfig, messages: ChatMessage[], cancel?: AbortSignal) => AsyncGenerator<string | LLMResult>;
 
 const TAG_LETTERS = NO_ANSWER_TAG.toUpperCase().replace(/[\s_]/g, ""); // "[[NOANSWER]]"
 
@@ -54,20 +54,83 @@ export class VisibleText {
   }
 }
 
-/** Stream from the models in priority order; one that fails before writing anything hands over to the next. */
-async function* modelStream(streamLlm: StreamLLM, chain: ModelConfig[], messages: ChatMessage[]): AsyncGenerator<[string | LLMResult, boolean]> {
-  for (let i = 0; i < chain.length; i++) {
-    let wrote = false;
-    try {
-      for await (const item of streamLlm(chain[i], messages)) {
-        wrote = wrote || typeof item === "string";
-        yield [item, i > 0];
-      }
-      return;
-    } catch (exc) {
-      if (!(exc instanceof LLMError) || wrote || i + 1 === chain.length) throw exc;
-      console.warn(`Model ${chain[i].display_name} failed (${exc.message}); trying ${chain[i + 1].display_name}`);
+/**
+ * If the model hasn't started its answer after this long, the next model in the chain starts
+ * too and whichever writes first answers. Providers sometimes stall for 10-30 s before the first
+ * word; without this the visitor waited it out (the fallback only stepped in on errors).
+ */
+export const HEAD_START_MS = 3000;
+
+interface Racer {
+  index: number;
+  started: number;
+  abort: AbortController;
+  gen: AsyncGenerator<string | LLMResult>;
+  first: Promise<IteratorResult<string | LLMResult>>;
+}
+
+type Outcome = { racer: Racer; res: IteratorResult<string | LLMResult> } | { racer: Racer; err: unknown } | { headStartOver: true };
+
+/**
+ * Stream from the models in priority order, yielding [item, whether a lower-priority model answers].
+ *
+ * A model that fails before writing hands over to the next; one that hasn't written anything
+ * after ``headStartMs`` gets the next model racing it, and the loser is cancelled.
+ */
+export async function* modelStream(
+  streamLlm: StreamLLM,
+  chain: ModelConfig[],
+  messages: ChatMessage[],
+  headStartMs = HEAD_START_MS,
+): AsyncGenerator<[string | LLMResult, boolean]> {
+  const active: Racer[] = [];
+  let next = 0;
+  let lastError: unknown = null;
+  const start = () => {
+    const abort = new AbortController();
+    const gen = streamLlm(chain[next], messages, abort.signal);
+    const racer: Racer = { index: next++, started: Date.now(), abort, gen, first: gen.next() };
+    racer.first.catch(() => {}); // a cancelled loser's failure is expected
+    active.push(racer);
+  };
+  const cancelAll = (except?: Racer) => active.forEach((r) => r !== except && r.abort.abort());
+
+  let winner: Racer | null = null;
+  let res: IteratorResult<string | LLMResult> | null = null;
+  while (!winner) {
+    if (!active.length) {
+      if (next >= chain.length) throw lastError ?? new LLMError("No AI model is configured. Add one in Settings → AI Models.");
+      start();
     }
+    const contenders: Promise<Outcome>[] = active.map((racer) => racer.first.then((r) => ({ racer, res: r }), (err) => ({ racer, err })));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (active.length === 1 && next < chain.length) {
+      const wait = Math.max(0, headStartMs - (Date.now() - active[0].started));
+      contenders.push(new Promise((resolve) => (timer = setTimeout(() => resolve({ headStartOver: true }), wait))));
+    }
+    const outcome = await Promise.race(contenders);
+    clearTimeout(timer);
+    if ("headStartOver" in outcome) {
+      console.log(`Model ${chain[active[0].index].display_name} hasn't answered after ${headStartMs} ms; starting ${chain[next].display_name} too`);
+      start();
+    } else if ("err" in outcome) {
+      active.splice(active.indexOf(outcome.racer), 1);
+      if (!(outcome.err instanceof LLMError)) {
+        cancelAll();
+        throw outcome.err;
+      }
+      console.warn(`Model ${chain[outcome.racer.index].display_name} failed (${outcome.err.message})`);
+      lastError = outcome.err;
+    } else {
+      winner = outcome.racer;
+      res = outcome.res;
+    }
+  }
+  cancelAll(winner);
+  const fromFallback = winner.index > 0;
+  while (!res!.done) {
+    yield [res!.value, fromFallback];
+    res = await winner.gen.next(); // a failure after the answer started is final
   }
 }
 
@@ -82,7 +145,7 @@ export async function* streamAnswer(
   channel = "widget",
   confirm: boolean | null = null,
   deps: ChatDeps = defaultDeps,
-  streamLlm: StreamLLM = (cfg, m) => streamComplete(cfg, m),
+  streamLlm: StreamLLM = (cfg, m, cancel) => streamComplete(cfg, m, null, cancel),
 ): AsyncGenerator<StreamEvent> {
   if (client.api_actions_enabled && actionsHook.answer) {
     const answered = await actionsHook.answer(env, client, sessionId, message, channel, confirm, deps);
