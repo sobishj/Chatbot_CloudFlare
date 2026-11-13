@@ -179,7 +179,7 @@ The client detail page has these tabs:
 | Website | **Crawl now** with live progress, crawl settings, crawled pages (view the exact text learned, remove a page) |
 | Documents | Drag-and-drop upload, Use checkboxes, key information, re-index |
 | AI model | Which saved model answers this client (default = system default) |
-| Branding | Colour, logo, bot name, greeting, language, position, "Powered by", **live preview** |
+| Branding | Colour, logo, chat-bubble icon, bot name, greeting, language, position, "Powered by", **live preview** |
 | Allowed domains | Websites allowed to use this bot (super admin only) |
 | Test chat | Chat as a visitor, with confidence score, model used, response time and the retrieved passages |
 | Embed code | The one-line script with a Copy button, plus guides for WordPress, Wix, Shopify, Squarespace, GTM and custom HTML |
@@ -402,7 +402,7 @@ Copy the line from client → **Embed code**:
   page.
 - It shows a floating bubble that opens a chat window, with a typing indicator. It is
   keyboard accessible (Enter sends, Escape closes) and full-screen on phones.
-- Branding (colour, logo, greeting, position, language, "Powered by") is loaded from
+- Branding (colour, logo, bubble icon, greeting, position, language, "Powered by") is loaded from
   `/api/client/<id>/config`. That response contains branding only, no secrets.
 - Visitors see only the answer, not where it came from (pages and documents stay private). The
   notice "Chats are recorded to improve service" is shown and editable in Settings → Privacy.

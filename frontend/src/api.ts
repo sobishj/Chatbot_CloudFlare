@@ -149,6 +149,7 @@ export interface Branding {
   mobile_height_pct: number;
   timezone: string;
   contact_details: string;
+  bubble_icon_file: string | null;
 }
 
 export interface Client {
@@ -174,6 +175,7 @@ export interface Client {
   active_jobs?: Job[];
   recent_jobs?: Job[];
   logo_url?: string | null;
+  bubble_icon_url?: string | null;
   can_edit_settings?: boolean;
   mode?: string;
 }

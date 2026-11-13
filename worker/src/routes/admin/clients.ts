@@ -31,7 +31,7 @@ import { accessibleClientIds } from "../../services/users";
 import { all, first, inList, run, toJson } from "../../util/db";
 import { HttpError, json, queryInt, readJson, validateBody } from "../../util/http";
 import { clientForUser, requireSetupCompleted, requireSuperAdmin, requireUser, type AppEnv, type C } from "../context";
-import { allLogoKeys, logoKey, logoResponse, sseResponse } from "../public";
+import { allLogoKeys, BRANDING_IMAGES, brandingImageUrl, logoKey, logoResponse, sseResponse, type BrandingImage } from "../public";
 import { kickJobs } from "../../worker/runner";
 
 const LOGO_MAX_BYTES = 1024 * 1024;
@@ -44,12 +44,6 @@ const LOGO_TYPES: [number[], [string, string]][] = [
 
 export function requireSuper(user: User): void {
   if (user.role !== "super_admin") throw new HttpError(403, "Only super admins can change this.");
-}
-
-function adminLogoUrl(client: Client): string | null {
-  const logo = (client.branding || {}).logo_file;
-  if (!logo) return null;
-  return `/api/admin/clients/${client.client_id}/logo?v=${(client.branding || {}).logo_version ?? 0}`;
 }
 
 /** The client as the detail page shows it; queues a step of any active job (the page polls this). */
@@ -65,7 +59,8 @@ export async function clientDetail(c: C, client: Client, user: User): Promise<Re
   const active = await jobService.listJobs(db, "jobs.client_id = ? AND jobs.status IN ('queued', 'running')", [client.id], "jobs.id");
   data.active_jobs = active.map((j) => jobService.jobToDict(j));
   data.recent_jobs = (await jobService.listJobs(db, "jobs.client_id = ?", [client.id], "jobs.id DESC", 10)).map((j) => jobService.jobToDict(j));
-  data.logo_url = adminLogoUrl(client);
+  data.logo_url = brandingImageUrl(client, "logo", "/api/admin/clients");
+  data.bubble_icon_url = brandingImageUrl(client, "bubble-icon", "/api/admin/clients");
   data.can_edit_settings = user.role === "super_admin";
   data.mode = values.mode;
   if (active.length) kickJobs(c);
@@ -228,35 +223,40 @@ export function registerClients(app: Hono<AppEnv>): void {
     return json({ client: await clientDetail(c, client, user) });
   });
 
-  app.post(`${base}/:client_id/logo`, async (c) => {
-    const { client, user } = await forClient(c);
-    const form = await c.req.raw.formData().catch(() => null);
-    const file = form?.get("file");
-    if (!file || typeof file === "string") throw new HttpError(422, [{ loc: ["body", "file"], msg: "Field required", type: "missing" }]);
-    if (file.size > LOGO_MAX_BYTES) throw new HttpError(400, "Logo must be 1 MB or smaller.");
-    const data = new Uint8Array(await file.arrayBuffer());
-    const kind = LOGO_TYPES.find(([magic]) => magic.every((b, i) => data[i] === b))?.[1];
-    const isWebp = data.length >= 12 && String.fromCharCode(...data.slice(8, 12)) === "WEBP";
-    if (!kind || (kind[0] === "webp" && !isWebp)) throw new HttpError(400, "Upload a PNG, JPG, GIF or WebP image.");
-    const filename = `logo.${kind[0]}`;
-    await deleteFiles(c.env.FILES_KV, allLogoKeys(client).filter((k) => k !== logoKey(client, filename)));
-    await putFile(c.env.FILES_KV, logoKey(client, filename), data, { contentType: kind[1] });
-    const brandingValue = { ...(client.branding || {}), logo_file: filename, logo_version: Math.floor(Date.now() / 1000) };
-    await run(c.env.DB, "UPDATE clients SET branding = ? WHERE id = ?", toJson(brandingValue), client.id);
-    return json({ client: await clientDetail(c, client, user) });
-  });
+  // Header logo and chat-bubble icon: same upload rules, separate files.
+  for (const kind of Object.keys(BRANDING_IMAGES) as BrandingImage[]) {
+    const { field, version, label } = BRANDING_IMAGES[kind];
 
-  app.delete(`${base}/:client_id/logo`, async (c) => {
-    const { client, user } = await forClient(c);
-    await deleteFiles(c.env.FILES_KV, allLogoKeys(client));
-    await run(c.env.DB, "UPDATE clients SET branding = ? WHERE id = ?", toJson({ ...(client.branding || {}), logo_file: null }), client.id);
-    return json({ client: await clientDetail(c, client, user) });
-  });
+    app.post(`${base}/:client_id/${kind}`, async (c) => {
+      const { client, user } = await forClient(c);
+      const form = await c.req.raw.formData().catch(() => null);
+      const file = form?.get("file");
+      if (!file || typeof file === "string") throw new HttpError(422, [{ loc: ["body", "file"], msg: "Field required", type: "missing" }]);
+      if (file.size > LOGO_MAX_BYTES) throw new HttpError(400, `${label} must be 1 MB or smaller.`);
+      const data = new Uint8Array(await file.arrayBuffer());
+      const type = LOGO_TYPES.find(([magic]) => magic.every((b, i) => data[i] === b))?.[1];
+      const isWebp = data.length >= 12 && String.fromCharCode(...data.slice(8, 12)) === "WEBP";
+      if (!type || (type[0] === "webp" && !isWebp)) throw new HttpError(400, "Upload a PNG, JPG, GIF or WebP image.");
+      const filename = `${kind}.${type[0]}`;
+      await deleteFiles(c.env.FILES_KV, allLogoKeys(client, [kind]).filter((k) => k !== logoKey(client, filename)));
+      await putFile(c.env.FILES_KV, logoKey(client, filename), data, { contentType: type[1] });
+      const brandingValue = { ...(client.branding || {}), [field]: filename, [version]: Math.floor(Date.now() / 1000) };
+      await run(c.env.DB, "UPDATE clients SET branding = ? WHERE id = ?", toJson(brandingValue), client.id);
+      return json({ client: await clientDetail(c, client, user) });
+    });
 
-  app.get(`${base}/:client_id/logo`, async (c) => {
-    const { client } = await forClient(c);
-    return logoResponse(c.env, client);
-  });
+    app.delete(`${base}/:client_id/${kind}`, async (c) => {
+      const { client, user } = await forClient(c);
+      await deleteFiles(c.env.FILES_KV, allLogoKeys(client, [kind]));
+      await run(c.env.DB, "UPDATE clients SET branding = ? WHERE id = ?", toJson({ ...(client.branding || {}), [field]: null }), client.id);
+      return json({ client: await clientDetail(c, client, user) });
+    });
+
+    app.get(`${base}/:client_id/${kind}`, async (c) => {
+      const { client } = await forClient(c);
+      return logoResponse(c.env, client, kind);
+    });
+  }
 
   // ------------------------------------------------------------------ domains
   app.put(`${base}/:client_id/domains`, async (c) => {

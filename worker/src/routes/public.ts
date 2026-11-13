@@ -106,17 +106,20 @@ export function registerPublic(app: Hono<AppEnv>): void {
   app.get("/api/client/:client_id/config", async (c) => {
     const db = c.env.DB;
     const [client, origin] = await clientForOrigin(db, c.req.param("client_id"), c.req.raw);
-    const logo = (client.branding || {}).logo_file;
-    const logoUrl = logo ? `/api/client/${client.client_id}/logo?v=${(client.branding || {}).logo_version ?? 0}` : null;
-    const config = publicConfig(client, (await getSetting(db, "chat_notice")) || "", logoUrl);
+    const config = publicConfig(client, (await getSetting(db, "chat_notice")) || "", {
+      logo_url: brandingImageUrl(client, "logo", "/api/client"),
+      bubble_icon_url: brandingImageUrl(client, "bubble-icon", "/api/client"),
+    });
     return json(config, 200, { ...corsHeaders(origin), "Cache-Control": "no-cache" });
   });
 
-  app.get("/api/client/:client_id/logo", async (c) => {
-    const client = await getBySlug(c.env.DB, c.req.param("client_id"));
-    if (!client || !client.active) throw new HttpError(404, "Not found.");
-    return logoResponse(c.env, client);
-  });
+  for (const kind of Object.keys(BRANDING_IMAGES) as BrandingImage[]) {
+    app.get(`/api/client/:client_id/${kind}`, async (c) => {
+      const client = await getBySlug(c.env.DB, c.req.param("client_id"));
+      if (!client || !client.active) throw new HttpError(404, "Not found.");
+      return logoResponse(c.env, client, kind);
+    });
+  }
 
   app.post("/api/chat", async (c) => {
     const body = validateBody(await readJson(c.req.raw), CHAT_SPEC);
@@ -143,19 +146,36 @@ export function registerPublic(app: Hono<AppEnv>): void {
 
 const LOGO_MEDIA: Record<string, string> = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 
+/**
+ * Uploaded branding images, by URL segment: the header logo and the chat-bubble icon.
+ * Stored in KV as clients/<slug>/branding/<kind>.<ext>; the file name lives in branding[field].
+ */
+export const BRANDING_IMAGES = {
+  logo: { field: "logo_file", version: "logo_version", label: "Logo" },
+  "bubble-icon": { field: "bubble_icon_file", version: "bubble_icon_version", label: "Bubble icon" },
+} as const;
+export type BrandingImage = keyof typeof BRANDING_IMAGES;
+
+/** URL of a branding image under `base` (/api/client or /api/admin/clients), or null when none is uploaded. */
+export function brandingImageUrl(client: Client, kind: BrandingImage, base: string): string | null {
+  const { field, version } = BRANDING_IMAGES[kind];
+  const b = client.branding || {};
+  return b[field] ? `${base}/${client.client_id}/${kind}?v=${b[version] ?? 0}` : null;
+}
+
 export function logoKey(client: Client, filename: string): string {
   return `clients/${client.client_id}/branding/${filename}`;
 }
 
-/** Every key a logo can have (one per image type), so it can be removed without listing KV. */
-export function allLogoKeys(client: Client): string[] {
-  return Object.keys(LOGO_MEDIA).map((ext) => logoKey(client, `logo.${ext}`));
+/** Every key a branding image can have (one per image type), so it can be removed without listing KV. */
+export function allLogoKeys(client: Client, kinds: BrandingImage[] = Object.keys(BRANDING_IMAGES) as BrandingImage[]): string[] {
+  return kinds.flatMap((kind) => Object.keys(LOGO_MEDIA).map((ext) => logoKey(client, `${kind}.${ext}`)));
 }
 
-export async function logoResponse(env: Env, client: Client): Promise<Response> {
-  const filename = (client.branding || {}).logo_file;
+export async function logoResponse(env: Env, client: Client, kind: BrandingImage = "logo"): Promise<Response> {
+  const filename = (client.branding || {})[BRANDING_IMAGES[kind].field];
   const obj = filename ? await getFile(env.FILES_KV, logoKey(client, filename)) : null;
-  if (!obj) throw new HttpError(404, "No logo.");
+  if (!obj) throw new HttpError(404, `No ${BRANDING_IMAGES[kind].label.toLowerCase()}.`);
   const ext = String(filename).split(".").pop() || "";
   return new Response(obj.data, {
     headers: {

@@ -65,7 +65,6 @@ export function BrandingTab({ client, reload }: TabProps) {
   const { busy, run } = useAction();
   const stage = useRef<HTMLDivElement>(null);
   const handle = useRef<WidgetHandle | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Branding>(k: K, v: Branding[K]) => setB({ ...b, [k]: v });
 
   useEffect(() => {
@@ -97,6 +96,7 @@ export function BrandingTab({ client, reload }: TabProps) {
     mobile_width_pct: b.mobile_width_pct,
     mobile_height_pct: b.mobile_height_pct,
     logo_url: client.logo_url ? `${location.origin}${client.logo_url}` : null,
+    bubble_icon_url: client.bubble_icon_url ? `${location.origin}${client.bubble_icon_url}` : null,
     notice,
     powered_by: b.powered_by,
     powered_by_text: b.powered_by_text,
@@ -115,12 +115,7 @@ export function BrandingTab({ client, reload }: TabProps) {
   useEffect(() => { handle.current?.setDevice(device); }, [device]);
   useEffect(() => () => { handle.current?.destroy(); handle.current = null; }, []);
 
-  const uploadLogo = (file: File) => run(async () => {
-    const form = new FormData();
-    form.append("file", file);
-    await api(`/api/admin/clients/${client.client_id}/logo`, { form });
-    await reload();
-  }, "Logo updated");
+  const imageProps = { clientId: client.client_id, busy, run, reload };
 
   return (
     <div className="grid split-preview">
@@ -163,16 +158,10 @@ export function BrandingTab({ client, reload }: TabProps) {
           <Field label="Contact details" htmlFor="b-contact" full hint="Given to visitors when the assistant can't answer their question. Leave empty to use contact details found on the website.">
             <textarea id="b-contact" className="textarea" rows={3} maxLength={500} value={b.contact_details} onChange={(e) => set("contact_details", e.target.value)} placeholder={"Phone: +91 98765 43210\nEmail: info@example.com\nWhatsApp: +91 98765 43210"} />
           </Field>
-          <div className="field full">
-            <span className="label">Logo</span>
-            <div className="row">
-              {client.logo_url ? <img src={client.logo_url} alt="Current logo" style={{ width: 44, height: 44, objectFit: "contain", border: "1px solid var(--border)", borderRadius: 8, padding: 3 }} /> : <span className="muted small">No logo</span>}
-              <Button icon="upload" onClick={() => fileInput.current?.click()} loading={busy}>Upload</Button>
-              {client.logo_url && <Button kind="ghost" onClick={() => run(async () => { await api(`/api/admin/clients/${client.client_id}/logo`, { method: "DELETE" }); await reload(); }, "Logo removed")}>Remove</Button>}
-              <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadLogo(f); e.target.value = ""; }} />
-            </div>
-            <span className="hint">PNG, JPG, GIF or WebP, up to 1 MB. Square images look best.</span>
-          </div>
+          <ImageUpload {...imageProps} kind="logo" label="Logo" url={client.logo_url} round={false}
+            hint="Shown in the chat header. PNG, JPG, GIF or WebP, up to 1 MB. Square images look best." />
+          <ImageUpload {...imageProps} kind="bubble-icon" label="Chat bubble icon" url={client.bubble_icon_url} round
+            hint="Replaces the chat icon on the round button visitors click. Fills the circle; transparent areas show the colour. PNG, JPG, GIF or WebP, up to 1 MB, square." />
           <label className="check full"><input type="checkbox" checked={b.powered_by} onChange={(e) => set("powered_by", e.target.checked)} />Show “Powered by” footer</label>
           {b.powered_by && (
             <>
@@ -204,6 +193,43 @@ export function BrandingTab({ client, reload }: TabProps) {
         </div>
         <span className="hint">Shown on {screen.label}, scaled to fit. The preview uses the real widget. Messages here aren't sent to the model; use Test chat for real answers.</span>
       </div>
+    </div>
+  );
+}
+
+/** Upload / remove one branding image (header logo or chat-bubble icon). */
+function ImageUpload({ clientId, kind, label, url, hint, round, busy, run, reload }: {
+  clientId: string;
+  kind: "logo" | "bubble-icon";
+  label: string;
+  url: string | null | undefined;
+  hint: string;
+  round: boolean;
+  busy: boolean;
+  run: ReturnType<typeof useAction>["run"];
+  reload: () => Promise<void>;
+}) {
+  const fileInput = useRef<HTMLInputElement>(null);
+  const endpoint = `/api/admin/clients/${clientId}/${kind}`;
+  const upload = (file: File) => run(async () => {
+    const form = new FormData();
+    form.append("file", file);
+    await api(endpoint, { form });
+    await reload();
+  }, `${label} updated`);
+  const preview = round
+    ? { width: 44, height: 44, objectFit: "cover" as const, borderRadius: "50%", border: "1px solid var(--border)" }
+    : { width: 44, height: 44, objectFit: "contain" as const, border: "1px solid var(--border)", borderRadius: 8, padding: 3 };
+  return (
+    <div className="field full">
+      <span className="label">{label}</span>
+      <div className="row">
+        {url ? <img src={url} alt={`Current ${label.toLowerCase()}`} style={preview} /> : <span className="muted small">{round ? "Default chat icon" : `No ${label.toLowerCase()}`}</span>}
+        <Button icon="upload" onClick={() => fileInput.current?.click()} loading={busy}>Upload</Button>
+        {url && <Button kind="ghost" onClick={() => run(async () => { await api(endpoint, { method: "DELETE" }); await reload(); }, `${label} removed`)}>Remove</Button>}
+        <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} />
+      </div>
+      <span className="hint">{hint}</span>
     </div>
   );
 }

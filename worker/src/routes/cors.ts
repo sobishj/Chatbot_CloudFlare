@@ -4,7 +4,7 @@ import { originAllowed } from "../services/clients";
 import { all, parseJson } from "../util/db";
 import { urlparse } from "../util/pyurl";
 
-const PUBLIC_PATH_RE = /^\/api\/(?:chat(?:\/stream)?|client\/[^/]+\/(?:config|logo))\/?$/;
+const PUBLIC_PATH_RE = /^\/api\/(?:chat(?:\/stream)?|client\/[^/]+\/(?:config|logo|bubble-icon))\/?$/;
 
 export function isPublicPath(path: string): boolean {
   return PUBLIC_PATH_RE.test(path);

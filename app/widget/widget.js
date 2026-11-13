@@ -107,6 +107,8 @@
     ".bubble:hover{transform:scale(1.05)}",
     ".bubble:focus-visible,.icon-btn:focus-visible,.send:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid #2563eb;outline-offset:2px}",
     ".bubble svg{width:28px;height:28px}",
+    ".bubble.custom{overflow:hidden;padding:0}",
+    ".bubble img{width:100%;height:100%;object-fit:cover;display:block}",
     // Size: --wa-w/--wa-h (desktop) and --wa-mw/--wa-mh (phones) are percentages of the screen,
     // set from the branding settings. Minimums keep the chat usable on small screens.
     ".panel{position:absolute;bottom:74px;width:calc(var(--wa-w,25) * 1vw);min-width:min(300px,calc(100vw - 40px));max-width:calc(100vw - 40px);height:calc(var(--wa-h,70) * 1vh);min-height:min(360px,calc(100vh - 110px));max-height:calc(100vh - 110px);background:#fff;border-radius:16px;box-shadow:0 18px 50px rgba(15,23,42,.28);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(15,23,42,.08)}",
@@ -204,6 +206,10 @@
     var bubble = root.querySelector(".bubble");
     var busy = false;
 
+    function assetUrl(url) {
+      return url.indexOf("http") === 0 || url.indexOf("blob:") === 0 || url.indexOf("data:") === 0 ? url : apiBase + url;
+    }
+
     function applyConfig(cfg) {
       config = cfg;
       t = STRINGS[(cfg.default_language || "en").slice(0, 2)] || STRINGS.en;
@@ -219,8 +225,20 @@
       head.innerHTML = "";
       if (cfg.logo_url) {
         var img = document.createElement("img");
-        img.className = "logo"; img.alt = ""; img.src = cfg.logo_url.indexOf("http") === 0 || cfg.logo_url.indexOf("blob:") === 0 || cfg.logo_url.indexOf("data:") === 0 ? cfg.logo_url : apiBase + cfg.logo_url;
+        img.className = "logo"; img.alt = ""; img.src = assetUrl(cfg.logo_url);
         head.appendChild(img);
+      }
+      // Chat bubble: the uploaded icon, or the default chat icon (also if the image fails to load).
+      bubble.innerHTML = ICON_CHAT;
+      bubble.className = "bubble";
+      if (cfg.bubble_icon_url) {
+        var icon = document.createElement("img");
+        icon.alt = "";
+        icon.onerror = function () { bubble.innerHTML = ICON_CHAT; bubble.className = "bubble"; };
+        icon.src = assetUrl(cfg.bubble_icon_url);
+        bubble.innerHTML = "";
+        bubble.className = "bubble custom";
+        bubble.appendChild(icon);
       }
       var name = document.createElement("div");
       name.className = "name"; name.id = "wa-title"; name.textContent = cfg.bot_name || t.title;

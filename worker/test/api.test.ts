@@ -398,6 +398,36 @@ describe("clients, roles and statistics", () => {
     expect((await b.get("/api/admin/clients/brand/logo")).status).toBe(404);
   });
 
+  it("the chat-bubble icon is stored apart from the logo and offered to the widget", async () => {
+    const b = new Browser(env);
+    await finishSetup(b);
+    await b.post("/api/admin/clients", { client_id: "icon", name: "Icon", allowed_domains: [new URL(ORIGIN).hostname] });
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 8, 9]);
+    const form = new FormData();
+    form.append("file", new File([png], "icon.png"));
+    const up = await b.req("POST", "/api/admin/clients/icon/bubble-icon", form);
+    expect(up.status).toBe(200);
+    expect(((await up.json()) as any).client.bubble_icon_url).toMatch(/^\/api\/admin\/clients\/icon\/bubble-icon\?v=/);
+    expect(new Uint8Array((await env.FILES_KV.get("clients/icon/branding/bubble-icon.png", "arrayBuffer"))!)).toEqual(png);
+    expect((await b.get("/api/admin/clients/icon/logo")).status).toBe(404); // the logo is untouched
+
+    const pub = new Browser(env);
+    const config = (await (await pub.get("/api/client/icon/config", { origin: ORIGIN })).json()) as any;
+    expect(config.logo_url).toBeNull();
+    expect(config.bubble_icon_url).toMatch(/^\/api\/client\/icon\/bubble-icon\?v=/);
+    const img = await pub.get(config.bubble_icon_url);
+    expect(img.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await img.arrayBuffer())).toEqual(png);
+
+    // Validation and removal work like the logo's.
+    const bad = new FormData();
+    bad.append("file", new File([new Uint8Array([1, 2, 3, 4])], "x.png"));
+    expect((await b.req("POST", "/api/admin/clients/icon/bubble-icon", bad)).status).toBe(400);
+    expect((await b.del("/api/admin/clients/icon/bubble-icon")).status).toBe(200);
+    expect(await env.FILES_KV.get("clients/icon/branding/bubble-icon.png")).toBeNull();
+    expect(((await (await pub.get("/api/client/icon/config", { origin: ORIGIN })).json()) as any).bubble_icon_url).toBeNull();
+  });
+
   it("document uploads over 25 MB are refused with a clear message", async () => {
     const b = new Browser(env);
     await finishSetup(b);

@@ -20,6 +20,7 @@ export const DEFAULT_BRANDING: Record<string, any> = {
   powered_by_text: "Powered by Website Assistant",
   powered_by_url: "",
   logo_file: null, // file name of the logo in KV (clients/<slug>/branding/)
+  bubble_icon_file: null, // file name of the chat-bubble icon in KV; none = the default chat icon
   // Chat window size in percent of the screen (20-100). Phones: 100 x 100 is full screen.
   width_pct: 25,
   height_pct: 70,
@@ -198,7 +199,7 @@ export function documentSettings(client: Client): Record<string, any> {
 export function validateBranding(changes: Record<string, any>): Record<string, any> {
   const clean: Record<string, any> = {};
   for (let [key, value] of Object.entries(changes)) {
-    if (!(key in DEFAULT_BRANDING) || key === "logo_file") continue;
+    if (!(key in DEFAULT_BRANDING) || key === "logo_file" || key === "bubble_icon_file") continue;
     if (key === "primary_color") {
       if (typeof value !== "string" || !HEX_COLOR_RE.test(value)) throw new ClientError("Colour must be a hex value like #1f5f5b.");
     } else if (key === "position") {
@@ -318,7 +319,11 @@ export async function modelNames(db: D1Database): Promise<Map<number, string>> {
 }
 
 /** Branding for the widget. Contains NO secrets or internal settings. */
-export function publicConfig(client: Client, chatNotice: string, logoUrl: string | null): Record<string, any> {
+export function publicConfig(
+  client: Client,
+  chatNotice: string,
+  images: { logo_url: string | null; bubble_icon_url: string | null },
+): Record<string, any> {
   const b = branding(client);
   return {
     client_id: client.client_id,
@@ -332,7 +337,8 @@ export function publicConfig(client: Client, chatNotice: string, logoUrl: string
     height_pct: b.height_pct,
     mobile_width_pct: b.mobile_width_pct,
     mobile_height_pct: b.mobile_height_pct,
-    logo_url: logoUrl,
+    logo_url: images.logo_url,
+    bubble_icon_url: images.bubble_icon_url,
     notice: chatNotice,
     powered_by: b.powered_by,
     powered_by_text: b.powered_by ? b.powered_by_text : "",
