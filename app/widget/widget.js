@@ -103,11 +103,17 @@
     "*,*::before,*::after{box-sizing:border-box}",
     ".wa{--wa-primary:#1f5f5b;--wa-on-primary:#fff;position:fixed;bottom:20px;z-index:2147483000;font:15px/1.45 system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans','Noto Sans Malayalam',sans-serif;color:#1f2933}",
     ".wa.right{right:20px}.wa.left{left:20px}",
-    ".bubble{width:58px;height:58px;border-radius:50%;border:0;cursor:pointer;background:var(--wa-primary);color:var(--wa-on-primary);box-shadow:0 6px 20px rgba(15,23,42,.25);display:grid;place-items:center;transition:transform .15s ease}",
-    ".bubble:hover{transform:scale(1.05)}",
+    // The launcher is a speech bubble: rounded body with a tail pointing at the screen corner.
+    // The shape is a clip-path, so the shadow comes from a drop-shadow filter on the button.
+    ".bubble{width:60px;height:60px;padding:0;border:0;background:none;cursor:pointer;filter:drop-shadow(0 6px 10px rgba(15,23,42,.28));transition:transform .15s ease;transform-origin:100% 100%}",
+    ".wa.left .bubble{transform-origin:0 100%}",
+    ".bubble:hover{transform:scale(1.06)}",
     ".bubble:focus-visible,.icon-btn:focus-visible,.send:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid #2563eb;outline-offset:2px}",
-    ".bubble svg{width:28px;height:28px}",
-    ".bubble.custom{overflow:hidden;padding:0}",
+    ".bubble .shape{display:flex;align-items:center;justify-content:center;width:100%;height:100%;padding-bottom:12px;border-radius:18px;background:var(--wa-primary);color:var(--wa-on-primary);" +
+      "clip-path:path('M16 0H44A16 16 0 0 1 60 16V32Q60 42 54 46L58 59L40 48H16A16 16 0 0 1 0 32V16A16 16 0 0 1 16 0Z')}",
+    ".wa.left .bubble .shape{clip-path:path('M44 0H16A16 16 0 0 0 0 16V32Q0 42 6 46L2 59L20 48H44A16 16 0 0 0 60 32V16A16 16 0 0 0 44 0Z')}",
+    ".bubble .shape svg{width:30px;height:30px}",
+    ".bubble.custom .shape{padding:0}",
     ".bubble img{width:100%;height:100%;object-fit:cover;display:block}",
     // Size: --wa-w/--wa-h (desktop) and --wa-mw/--wa-mh (phones) are percentages of the screen,
     // set from the branding settings. Minimums keep the chat usable on small screens.
@@ -160,7 +166,8 @@
     "@media (prefers-reduced-motion:reduce){.bubble,.typing i{transition:none;animation:none}}"
   ].join("");
 
-  var ICON_CHAT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>';
+  // Three dots inside the speech-bubble launcher (the bubble itself is the chat shape).
+  var ICON_CHAT = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>';
   var ICON_CLOSE = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   var ICON_SEND = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 
@@ -193,7 +200,7 @@
       '<textarea id="wa-input" rows="1" maxlength="1000"></textarea>' +
       '<button class="send" type="submit">' + ICON_SEND + "</button></form>" +
       '<div class="notice"></div><div class="powered"></div></div></div>' +
-      '<button class="bubble" type="button" aria-expanded="false">' + ICON_CHAT + "</button></div>";
+      '<button class="bubble" type="button" aria-expanded="false"><span class="shape">' + ICON_CHAT + "</span></button></div>";
 
     var device = options.device === "mobile" ? "mobile" : "desktop"; // preview only
     var wrap = root.querySelector(".wa");
@@ -229,16 +236,17 @@
         head.appendChild(img);
       }
       // Chat bubble: the uploaded icon, or the default chat icon (also if the image fails to load).
-      bubble.innerHTML = ICON_CHAT;
+      var shape = bubble.querySelector(".shape");
+      shape.innerHTML = ICON_CHAT;
       bubble.className = "bubble";
       if (cfg.bubble_icon_url) {
         var icon = document.createElement("img");
         icon.alt = "";
-        icon.onerror = function () { bubble.innerHTML = ICON_CHAT; bubble.className = "bubble"; };
+        icon.onerror = function () { shape.innerHTML = ICON_CHAT; bubble.className = "bubble"; };
         icon.src = assetUrl(cfg.bubble_icon_url);
-        bubble.innerHTML = "";
+        shape.innerHTML = "";
         bubble.className = "bubble custom";
-        bubble.appendChild(icon);
+        shape.appendChild(icon);
       }
       var name = document.createElement("div");
       name.className = "name"; name.id = "wa-title"; name.textContent = cfg.bot_name || t.title;

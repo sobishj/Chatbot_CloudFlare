@@ -161,7 +161,7 @@ export function BrandingTab({ client, reload }: TabProps) {
           <ImageUpload {...imageProps} kind="logo" label="Logo" url={client.logo_url} round={false}
             hint="Shown in the chat header. PNG, JPG, GIF or WebP, up to 1 MB. Square images look best." />
           <ImageUpload {...imageProps} kind="bubble-icon" label="Chat bubble icon" url={client.bubble_icon_url} round
-            hint="Replaces the chat icon on the round button visitors click. Fills the circle; transparent areas show the colour. PNG, JPG, GIF or WebP, up to 1 MB, square." />
+            hint="Fills the speech-bubble button visitors click (instead of the three dots). Transparent areas show the colour. PNG, JPG, GIF or WebP, up to 1 MB, square." />
           <label className="check full"><input type="checkbox" checked={b.powered_by} onChange={(e) => set("powered_by", e.target.checked)} />Show “Powered by” footer</label>
           {b.powered_by && (
             <>
@@ -217,8 +217,9 @@ function ImageUpload({ clientId, kind, label, url, hint, round, busy, run, reloa
     await api(endpoint, { form });
     await reload();
   }, `${label} updated`);
+  // The bubble icon is shown clipped to the widget's speech-bubble shape (same path as widget.js).
   const preview = round
-    ? { width: 44, height: 44, objectFit: "cover" as const, borderRadius: "50%", border: "1px solid var(--border)" }
+    ? { width: 60, height: 60, objectFit: "cover" as const, clipPath: "path('M16 0H44A16 16 0 0 1 60 16V32Q60 42 54 46L58 59L40 48H16A16 16 0 0 1 0 32V16A16 16 0 0 1 16 0Z')" }
     : { width: 44, height: 44, objectFit: "contain" as const, border: "1px solid var(--border)", borderRadius: 8, padding: 3 };
   return (
     <div className="field full">
